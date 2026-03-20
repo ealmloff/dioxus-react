@@ -2,17 +2,42 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wry_launch::{LaunchBuilder, WebViewBuilder};
 
-fn main() -> wry::Result<()> {
-    // Register a custom "asset" protocol that serves files from the asset
-    // directory using dioxus-asset-resolver.  This lets the webview load
-    // scripts, stylesheets, and other files via `asset://localhost/…` URLs
-    // without any network access.
+fn main() -> wry_launch::wry::Result<()> {
+    // Register a custom "asset" protocol that serves files from the assets
+    // directory next to the binary. This lets the webview load scripts,
+    // stylesheets, and other files via `asset://localhost/…` URLs without
+    // any network access.
     let webview = WebViewBuilder::new()
         .with_devtools(true)
         .with_custom_protocol("asset".into(), move |_webview_id, request| {
-            let path = percent_decode(request.uri().path());
-            match dioxus_asset_resolver::native::serve_asset(&path) {
-                Ok(r) => r.map(Into::into),
+            let uri_path = percent_decode(request.uri().path());
+            // Serve assets from the `assets/` directory next to the binary.
+            let base = std::env::current_exe()
+                .expect("current_exe")
+                .parent()
+                .expect("exe parent")
+                .to_path_buf();
+            let relative = uri_path.strip_prefix('/').unwrap_or(&uri_path);
+            let file_path = base.join(relative);
+            match std::fs::read(&file_path) {
+                Ok(bytes) => {
+                    let mime = match file_path.extension().and_then(|e| e.to_str()) {
+                        Some("js") => "text/javascript; charset=utf-8",
+                        Some("css") => "text/css; charset=utf-8",
+                        Some("html") => "text/html; charset=utf-8",
+                        Some("json") => "application/json; charset=utf-8",
+                        Some("svg") => "image/svg+xml; charset=utf-8",
+                        Some("png") => "image/png",
+                        Some("jpg" | "jpeg") => "image/jpeg",
+                        Some("wasm") => "application/wasm",
+                        _ => "application/octet-stream",
+                    };
+                    http::Response::builder()
+                        .header("Content-Type", mime)
+                        .header("Access-Control-Allow-Origin", "*")
+                        .body(bytes.into())
+                        .unwrap()
+                }
                 Err(e) => http::Response::builder()
                     .status(404)
                     .header("Content-Type", "text/plain")
@@ -74,8 +99,9 @@ fn setup_app() {
     // Create the React mount point
     body.set_inner_html(r#"<div id="root">Loading…</div>"#);
 
-    // Register native Rust functions on window.__native
-    register_native_functions(&window);
+    // Expose native Rust bridge to JavaScript as window.__native
+    let bridge: JsValue = NativeBridge {}.into();
+    js_sys::Reflect::set(&window, &"__native".into(), &bridge).unwrap();
 
     // Load React, ReactDOM, then the app — each via the asset protocol.
     // Scripts are chained through onload to guarantee execution order.
@@ -107,16 +133,18 @@ fn setup_app() {
     .unwrap();
 }
 
-/// Expose native Rust functions to JavaScript via `window.__native`.
+/// Native Rust bridge exposed to JavaScript as `window.__native`.
 ///
-/// React components call these functions to access native capabilities
+/// React components call these methods to access native capabilities
 /// (filesystem, system info, computation) unavailable in a browser sandbox.
-fn register_native_functions(window: &web_sys::Window) {
-    let native = js_sys::Object::new();
+#[wasm_bindgen]
+pub struct NativeBridge;
 
-    // -- System info ----------------------------------------------------------
-    let get_system_info = Closure::wrap(Box::new(|| -> JsValue {
-        let info = serde_json::json!({
+#[wasm_bindgen]
+impl NativeBridge {
+    #[wasm_bindgen(js_name = "getSystemInfo")]
+    pub fn get_system_info(&self) -> String {
+        serde_json::json!({
             "os": std::env::consts::OS,
             "arch": std::env::consts::ARCH,
             "family": std::env::consts::FAMILY,
@@ -126,15 +154,12 @@ fn register_native_functions(window: &web_sys::Window) {
             "cwd": std::env::current_dir()
                 .map(|p| p.display().to_string())
                 .unwrap_or_default(),
-        });
-        JsValue::from_str(&info.to_string())
-    }) as Box<dyn Fn() -> JsValue>);
-    js_sys::Reflect::set(&native, &"getSystemInfo".into(), get_system_info.as_ref()).unwrap();
-    get_system_info.forget();
+        })
+        .to_string()
+    }
 
-    // -- Fibonacci (native speed) ---------------------------------------------
-    let fibonacci = Closure::wrap(Box::new(|n: JsValue| -> JsValue {
-        let n = n.as_f64().unwrap_or(0.0) as u64;
+    pub fn fibonacci(&self, n: f64) -> f64 {
+        let n = n as u64;
         let result = if n <= 1 {
             n
         } else {
@@ -146,14 +171,11 @@ fn register_native_functions(window: &web_sys::Window) {
             }
             b
         };
-        JsValue::from_f64(result as f64)
-    }) as Box<dyn Fn(JsValue) -> JsValue>);
-    js_sys::Reflect::set(&native, &"fibonacci".into(), fibonacci.as_ref()).unwrap();
-    fibonacci.forget();
+        result as f64
+    }
 
-    // -- Read directory -------------------------------------------------------
-    let read_dir = Closure::wrap(Box::new(|path: JsValue| -> JsValue {
-        let path = path.as_string().unwrap_or_else(|| ".".to_string());
+    #[wasm_bindgen(js_name = "readDir")]
+    pub fn read_dir(&self, path: String) -> String {
         match std::fs::read_dir(&path) {
             Ok(entries) => {
                 let mut items: Vec<serde_json::Value> = entries
@@ -177,19 +199,14 @@ fn register_native_functions(window: &web_sys::Window) {
                             .cmp(b["name"].as_str().unwrap_or(""))
                     })
                 });
-                JsValue::from_str(&serde_json::json!({ "entries": items }).to_string())
+                serde_json::json!({ "entries": items }).to_string()
             }
-            Err(e) => JsValue::from_str(
-                &serde_json::json!({ "error": e.to_string() }).to_string(),
-            ),
+            Err(e) => serde_json::json!({ "error": e.to_string() }).to_string(),
         }
-    }) as Box<dyn Fn(JsValue) -> JsValue>);
-    js_sys::Reflect::set(&native, &"readDir".into(), read_dir.as_ref()).unwrap();
-    read_dir.forget();
+    }
 
-    // -- Read file ------------------------------------------------------------
-    let read_file = Closure::wrap(Box::new(|path: JsValue| -> JsValue {
-        let path = path.as_string().unwrap_or_default();
+    #[wasm_bindgen(js_name = "readFile")]
+    pub fn read_file(&self, path: String) -> String {
         match std::fs::read_to_string(&path) {
             Ok(content) => {
                 let truncated = content.len() > 10_000;
@@ -198,48 +215,30 @@ fn register_native_functions(window: &web_sys::Window) {
                 } else {
                     &content
                 };
-                JsValue::from_str(
-                    &serde_json::json!({
-                        "content": display,
-                        "truncated": truncated,
-                        "totalBytes": content.len(),
-                    })
-                    .to_string(),
-                )
+                serde_json::json!({
+                    "content": display,
+                    "truncated": truncated,
+                    "totalBytes": content.len(),
+                })
+                .to_string()
             }
-            Err(e) => JsValue::from_str(
-                &serde_json::json!({ "error": e.to_string() }).to_string(),
-            ),
+            Err(e) => serde_json::json!({ "error": e.to_string() }).to_string(),
         }
-    }) as Box<dyn Fn(JsValue) -> JsValue>);
-    js_sys::Reflect::set(&native, &"readFile".into(), read_file.as_ref()).unwrap();
-    read_file.forget();
+    }
 
-    // -- Write file -----------------------------------------------------------
-    let write_file = Closure::wrap(Box::new(|path: JsValue, content: JsValue| -> JsValue {
-        let path = path.as_string().unwrap_or_default();
-        let content = content.as_string().unwrap_or_default();
+    #[wasm_bindgen(js_name = "writeFile")]
+    pub fn write_file(&self, path: String, content: String) -> String {
         match std::fs::write(&path, &content) {
-            Ok(()) => JsValue::from_str(&serde_json::json!({ "ok": true }).to_string()),
-            Err(e) => JsValue::from_str(
-                &serde_json::json!({ "error": e.to_string() }).to_string(),
-            ),
+            Ok(()) => serde_json::json!({ "ok": true }).to_string(),
+            Err(e) => serde_json::json!({ "error": e.to_string() }).to_string(),
         }
-    }) as Box<dyn Fn(JsValue, JsValue) -> JsValue>);
-    js_sys::Reflect::set(&native, &"writeFile".into(), write_file.as_ref()).unwrap();
-    write_file.forget();
+    }
 
-    // -- Env vars -------------------------------------------------------------
-    let get_env = Closure::wrap(Box::new(|key: JsValue| -> JsValue {
-        let key = key.as_string().unwrap_or_default();
+    #[wasm_bindgen(js_name = "getEnv")]
+    pub fn get_env(&self, key: String) -> JsValue {
         match std::env::var(&key) {
             Ok(val) => JsValue::from_str(&val),
             Err(_) => JsValue::NULL,
         }
-    }) as Box<dyn Fn(JsValue) -> JsValue>);
-    js_sys::Reflect::set(&native, &"getEnv".into(), get_env.as_ref()).unwrap();
-    get_env.forget();
-
-    // Attach __native to window
-    js_sys::Reflect::set(window, &"__native".into(), &native).unwrap();
+    }
 }

@@ -1,16 +1,50 @@
-// React app loaded via wasm-bindgen-wry.
-// Native Rust functions are available on window.__native.
-(function () {
-  var h = React.createElement;
-  var useState = React.useState;
-  var useEffect = React.useEffect;
-  var useCallback = React.useCallback;
-  var useRef = React.useRef;
+"use strict";
+(() => {
+  var __create = Object.create;
+  var __defProp = Object.defineProperty;
+  var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+  var __getOwnPropNames = Object.getOwnPropertyNames;
+  var __getProtoOf = Object.getPrototypeOf;
+  var __hasOwnProp = Object.prototype.hasOwnProperty;
+  var __commonJS = (cb, mod) => function __require() {
+    return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
+  };
+  var __copyProps = (to, from, except, desc) => {
+    if (from && typeof from === "object" || typeof from === "function") {
+      for (let key of __getOwnPropNames(from))
+        if (!__hasOwnProp.call(to, key) && key !== except)
+          __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+    }
+    return to;
+  };
+  var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
+    // If the importer is in node compatibility mode or this is not an ESM
+    // file that has been converted to a CommonJS file using a Babel-
+    // compatible transform (i.e. "__esModule" has not been set), then set
+    // "default" to the CommonJS "module.exports" for node compatibility.
+    isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
+    mod
+  ));
 
-  // Helper: call a native Rust function and parse the JSON result
-  function callNative(fn) {
-    var args = Array.prototype.slice.call(arguments, 1);
-    var result = window.__native[fn].apply(null, args);
+  // react-global:react
+  var require_react = __commonJS({
+    "react-global:react"(exports, module) {
+      module.exports = React;
+    }
+  });
+
+  // react-global:react-dom/client
+  var require_client = __commonJS({
+    "react-global:react-dom/client"(exports, module) {
+      module.exports = ReactDOM;
+    }
+  });
+
+  // assets/src/App.tsx
+  var import_react = __toESM(require_react());
+  var import_client = __toESM(require_client());
+  function callNative(fn, ...args) {
+    const result = window.__native[fn](...args);
     if (typeof result === "string") {
       try {
         return JSON.parse(result);
@@ -20,376 +54,160 @@
     }
     return result;
   }
-
-  // ---------------------------------------------------------------------------
-  // Tab navigation
-  // ---------------------------------------------------------------------------
-  function Tabs(props) {
-    return h(
-      "div",
-      { className: "tabs" },
-      props.items.map(function (item) {
-        return h(
-          "button",
-          {
-            key: item,
-            className: "tab" + (props.active === item ? " tab-active" : ""),
-            onClick: function () {
-              props.onSelect(item);
-            },
-          },
-          item
-        );
-      })
-    );
+  function Tabs({ items, active, onSelect }) {
+    return /* @__PURE__ */ import_react.default.createElement("div", { className: "tabs" }, items.map((item) => /* @__PURE__ */ import_react.default.createElement(
+      "button",
+      {
+        key: item,
+        className: "tab" + (active === item ? " tab-active" : ""),
+        onClick: () => onSelect(item)
+      },
+      item
+    )));
   }
-
-  // ---------------------------------------------------------------------------
-  // System Info panel
-  // ---------------------------------------------------------------------------
   function SystemInfo() {
-    var ref = useState(null);
-    var info = ref[0],
-      setInfo = ref[1];
-
-    useEffect(function () {
+    const [info, setInfo] = (0, import_react.useState)(null);
+    (0, import_react.useEffect)(() => {
       setInfo(callNative("getSystemInfo"));
     }, []);
-
-    if (!info) return h("p", null, "Loading...");
-
-    return h(
-      "div",
-      { className: "card" },
-      h("h2", null, "System Information"),
-      h(
-        "table",
-        { className: "info-table" },
-        h(
-          "tbody",
-          null,
-          Object.keys(info).map(function (key) {
-            return h(
-              "tr",
-              { key: key },
-              h("td", { className: "info-label" }, key),
-              h("td", { className: "info-value" }, String(info[key]))
-            );
-          })
-        )
-      )
-    );
+    if (!info) return /* @__PURE__ */ import_react.default.createElement("p", null, "Loading...");
+    return /* @__PURE__ */ import_react.default.createElement("div", { className: "card" }, /* @__PURE__ */ import_react.default.createElement("h2", null, "System Information"), /* @__PURE__ */ import_react.default.createElement("table", { className: "info-table" }, /* @__PURE__ */ import_react.default.createElement("tbody", null, Object.keys(info).map((key) => /* @__PURE__ */ import_react.default.createElement("tr", { key }, /* @__PURE__ */ import_react.default.createElement("td", { className: "info-label" }, key), /* @__PURE__ */ import_react.default.createElement("td", { className: "info-value" }, String(info[key])))))));
   }
-
-  // ---------------------------------------------------------------------------
-  // Fibonacci calculator — runs in native Rust
-  // ---------------------------------------------------------------------------
   function FibonacciCalc() {
-    var ref1 = useState(10);
-    var n = ref1[0],
-      setN = ref1[1];
-    var ref2 = useState(null);
-    var result = ref2[0],
-      setResult = ref2[1];
-    var ref3 = useState(null);
-    var elapsed = ref3[0],
-      setElapsed = ref3[1];
-
-    var calculate = useCallback(
-      function () {
-        var start = performance.now();
-        var val = window.__native.fibonacci(n);
-        var ms = (performance.now() - start).toFixed(3);
-        setResult(val);
-        setElapsed(ms);
-      },
-      [n]
-    );
-
-    return h(
-      "div",
-      { className: "card" },
-      h("h2", null, "Native Fibonacci"),
-      h("p", { className: "subtitle" }, "Computed in native Rust — not in JS."),
-      h(
-        "div",
-        { className: "row" },
-        h(
-          "label",
-          null,
-          "n = ",
-          h("input", {
-            type: "number",
-            min: 0,
-            max: 93,
-            value: n,
-            onChange: function (e) {
-              setN(Number(e.target.value));
-            },
-          })
-        ),
-        h("button", { className: "btn", onClick: calculate }, "Calculate")
-      ),
-      result !== null &&
-        h(
-          "div",
-          { className: "result" },
-          h("span", { className: "result-label" }, "Result: "),
-          h("span", { className: "result-value" }, String(result)),
-          h(
-            "span",
-            { className: "result-time" },
-            " (" + elapsed + " ms)"
-          )
-        )
-    );
+    const [n, setN] = (0, import_react.useState)(10);
+    const [result, setResult] = (0, import_react.useState)(null);
+    const [elapsed, setElapsed] = (0, import_react.useState)(null);
+    const calculate = (0, import_react.useCallback)(() => {
+      const start = performance.now();
+      const val = window.__native.fibonacci(n);
+      const ms = (performance.now() - start).toFixed(3);
+      setResult(val);
+      setElapsed(ms);
+    }, [n]);
+    return /* @__PURE__ */ import_react.default.createElement("div", { className: "card" }, /* @__PURE__ */ import_react.default.createElement("h2", null, "Native Fibonacci"), /* @__PURE__ */ import_react.default.createElement("p", { className: "subtitle" }, "Computed in native Rust \u2014 not in JS."), /* @__PURE__ */ import_react.default.createElement("div", { className: "row" }, /* @__PURE__ */ import_react.default.createElement("label", null, "n =", " ", /* @__PURE__ */ import_react.default.createElement(
+      "input",
+      {
+        type: "number",
+        min: 0,
+        max: 93,
+        value: n,
+        onChange: (e) => setN(Number(e.target.value))
+      }
+    )), /* @__PURE__ */ import_react.default.createElement("button", { className: "btn", onClick: calculate }, "Calculate")), result !== null && /* @__PURE__ */ import_react.default.createElement("div", { className: "result" }, /* @__PURE__ */ import_react.default.createElement("span", { className: "result-label" }, "Result: "), /* @__PURE__ */ import_react.default.createElement("span", { className: "result-value" }, String(result)), /* @__PURE__ */ import_react.default.createElement("span", { className: "result-time" }, " (", elapsed, " ms)")));
   }
-
-  // ---------------------------------------------------------------------------
-  // File Explorer — reads the native filesystem via Rust
-  // ---------------------------------------------------------------------------
   function FileExplorer() {
-    var ref1 = useState(
+    const [currentPath, setCurrentPath] = (0, import_react.useState)(
       callNative("getSystemInfo").cwd || "."
     );
-    var currentPath = ref1[0],
-      setCurrentPath = ref1[1];
-    var ref2 = useState([]);
-    var entries = ref2[0],
-      setEntries = ref2[1];
-    var ref3 = useState(null);
-    var error = ref3[0],
-      setError = ref3[1];
-    var ref4 = useState(null);
-    var fileContent = ref4[0],
-      setFileContent = ref4[1];
-    var ref5 = useState(null);
-    var viewingFile = ref5[0],
-      setViewingFile = ref5[1];
-    var inputRef = useRef(null);
-
-    var loadDir = useCallback(
-      function (path) {
-        var res = callNative("readDir", path);
-        if (res.error) {
-          setError(res.error);
-          setEntries([]);
-        } else {
-          setError(null);
-          setEntries(res.entries || []);
-          setCurrentPath(path);
-        }
-        setFileContent(null);
-        setViewingFile(null);
-      },
-      []
-    );
-
-    useEffect(
-      function () {
-        loadDir(currentPath);
-      },
-      []
-    );
-
-    var openEntry = useCallback(
-      function (entry) {
-        var sep = currentPath.indexOf("\\") !== -1 ? "\\" : "/";
-        var child = currentPath + sep + entry.name;
+    const [entries, setEntries] = (0, import_react.useState)([]);
+    const [error, setError] = (0, import_react.useState)(null);
+    const [fileContent, setFileContent] = (0, import_react.useState)(null);
+    const [viewingFile, setViewingFile] = (0, import_react.useState)(null);
+    const inputRef = (0, import_react.useRef)(null);
+    const loadDir = (0, import_react.useCallback)((path) => {
+      const res = callNative("readDir", path);
+      if (res.error) {
+        setError(res.error);
+        setEntries([]);
+      } else {
+        setError(null);
+        setEntries(res.entries || []);
+        setCurrentPath(path);
+      }
+      setFileContent(null);
+      setViewingFile(null);
+    }, []);
+    (0, import_react.useEffect)(() => {
+      loadDir(currentPath);
+    }, []);
+    const openEntry = (0, import_react.useCallback)(
+      (entry) => {
+        var _a;
+        const sep = currentPath.indexOf("\\") !== -1 ? "\\" : "/";
+        const child = currentPath + sep + entry.name;
         if (entry.isDir) {
           loadDir(child);
         } else {
-          var res = callNative("readFile", child);
+          const res = callNative("readFile", child);
           if (res.error) {
             setFileContent("Error: " + res.error);
           } else {
-            setFileContent(res.content);
+            setFileContent((_a = res.content) != null ? _a : null);
           }
           setViewingFile(entry.name);
         }
       },
       [currentPath, loadDir]
     );
-
-    var goUp = useCallback(
-      function () {
-        var sep = currentPath.indexOf("\\") !== -1 ? "\\" : "/";
-        var parts = currentPath.split(sep);
-        if (parts.length > 1) {
-          parts.pop();
-          var parent = parts.join(sep) || sep;
-          loadDir(parent);
-        }
-      },
-      [currentPath, loadDir]
-    );
-
+    const goUp = (0, import_react.useCallback)(() => {
+      const sep = currentPath.indexOf("\\") !== -1 ? "\\" : "/";
+      const parts = currentPath.split(sep);
+      if (parts.length > 1) {
+        parts.pop();
+        const parent = parts.join(sep) || sep;
+        loadDir(parent);
+      }
+    }, [currentPath, loadDir]);
     function formatSize(bytes) {
       if (bytes < 1024) return bytes + " B";
       if (bytes < 1048576) return (bytes / 1024).toFixed(1) + " KB";
       return (bytes / 1048576).toFixed(1) + " MB";
     }
-
-    return h(
+    return /* @__PURE__ */ import_react.default.createElement("div", { className: "card" }, /* @__PURE__ */ import_react.default.createElement("h2", null, "File Explorer"), /* @__PURE__ */ import_react.default.createElement("p", { className: "subtitle" }, "Browse your native filesystem from React."), /* @__PURE__ */ import_react.default.createElement("div", { className: "row" }, /* @__PURE__ */ import_react.default.createElement("button", { className: "btn btn-sm", onClick: goUp }, "\u2191", " Up"), /* @__PURE__ */ import_react.default.createElement(
+      "input",
+      {
+        ref: inputRef,
+        className: "path-input",
+        value: currentPath,
+        onChange: (e) => setCurrentPath(e.target.value),
+        onKeyDown: (e) => {
+          if (e.key === "Enter")
+            loadDir(e.target.value);
+        }
+      }
+    ), /* @__PURE__ */ import_react.default.createElement("button", { className: "btn btn-sm", onClick: () => loadDir(currentPath) }, "Go")), error && /* @__PURE__ */ import_react.default.createElement("p", { className: "error" }, error), /* @__PURE__ */ import_react.default.createElement("div", { className: "file-list" }, entries.map((entry) => /* @__PURE__ */ import_react.default.createElement(
       "div",
-      { className: "card" },
-      h("h2", null, "File Explorer"),
-      h("p", { className: "subtitle" }, "Browse your native filesystem from React."),
-      h(
-        "div",
-        { className: "row" },
-        h("button", { className: "btn btn-sm", onClick: goUp }, "\u2191 Up"),
-        h("input", {
-          ref: inputRef,
-          className: "path-input",
-          value: currentPath,
-          onChange: function (e) {
-            setCurrentPath(e.target.value);
-          },
-          onKeyDown: function (e) {
-            if (e.key === "Enter") loadDir(e.target.value);
-          },
-        }),
-        h(
-          "button",
-          {
-            className: "btn btn-sm",
-            onClick: function () {
-              loadDir(currentPath);
-            },
-          },
-          "Go"
-        )
-      ),
-      error && h("p", { className: "error" }, error),
-      h(
-        "div",
-        { className: "file-list" },
-        entries.map(function (entry) {
-          return h(
-            "div",
-            {
-              key: entry.name,
-              className: "file-entry" + (entry.isDir ? " file-dir" : ""),
-              onClick: function () {
-                openEntry(entry);
-              },
-            },
-            h(
-              "span",
-              { className: "file-icon" },
-              entry.isDir ? "\uD83D\uDCC1" : "\uD83D\uDCC4"
-            ),
-            h("span", { className: "file-name" }, entry.name),
-            !entry.isDir &&
-              h("span", { className: "file-size" }, formatSize(entry.size))
-          );
-        })
-      ),
-      viewingFile &&
-        h(
-          "div",
-          { className: "file-preview" },
-          h("h3", null, viewingFile),
-          h("pre", null, fileContent)
-        )
-    );
+      {
+        key: entry.name,
+        className: "file-entry" + (entry.isDir ? " file-dir" : ""),
+        onClick: () => openEntry(entry)
+      },
+      /* @__PURE__ */ import_react.default.createElement("span", { className: "file-icon" }, entry.isDir ? "\u{1F4C1}" : "\u{1F4C4}"),
+      /* @__PURE__ */ import_react.default.createElement("span", { className: "file-name" }, entry.name),
+      !entry.isDir && /* @__PURE__ */ import_react.default.createElement("span", { className: "file-size" }, formatSize(entry.size))
+    ))), viewingFile && /* @__PURE__ */ import_react.default.createElement("div", { className: "file-preview" }, /* @__PURE__ */ import_react.default.createElement("h3", null, viewingFile), /* @__PURE__ */ import_react.default.createElement("pre", null, fileContent)));
   }
-
-  // ---------------------------------------------------------------------------
-  // Counter — pure React state, proving React works in wry
-  // ---------------------------------------------------------------------------
   function Counter() {
-    var ref = useState(0);
-    var count = ref[0],
-      setCount = ref[1];
-
-    return h(
-      "div",
-      { className: "card" },
-      h("h2", null, "Counter"),
-      h("p", { className: "subtitle" }, "Pure React state — no native calls."),
-      h(
-        "div",
-        { className: "counter-row" },
-        h(
-          "button",
-          {
-            className: "btn",
-            onClick: function () {
-              setCount(count - 1);
-            },
-          },
-          "\u2212"
-        ),
-        h("span", { className: "counter-value" }, count),
-        h(
-          "button",
-          {
-            className: "btn",
-            onClick: function () {
-              setCount(count + 1);
-            },
-          },
-          "+"
-        )
-      )
-    );
+    const [count, setCount] = (0, import_react.useState)(0);
+    return /* @__PURE__ */ import_react.default.createElement("div", { className: "card" }, /* @__PURE__ */ import_react.default.createElement("h2", null, "Counter"), /* @__PURE__ */ import_react.default.createElement("p", { className: "subtitle" }, "Pure React state \u2014 no native calls."), /* @__PURE__ */ import_react.default.createElement("div", { className: "counter-row" }, /* @__PURE__ */ import_react.default.createElement("button", { className: "btn", onClick: () => setCount(count - 1) }, "\u2212"), /* @__PURE__ */ import_react.default.createElement("span", { className: "counter-value" }, count), /* @__PURE__ */ import_react.default.createElement("button", { className: "btn", onClick: () => setCount(count + 1) }, "+")));
   }
-
-  // ---------------------------------------------------------------------------
-  // App shell
-  // ---------------------------------------------------------------------------
   var TAB_NAMES = ["System Info", "Fibonacci", "File Explorer", "Counter"];
-
   function App() {
-    var ref = useState(TAB_NAMES[0]);
-    var tab = ref[0],
-      setTab = ref[1];
-
-    var content;
+    const [tab, setTab] = (0, import_react.useState)(TAB_NAMES[0]);
+    let content;
     switch (tab) {
       case "System Info":
-        content = h(SystemInfo);
+        content = /* @__PURE__ */ import_react.default.createElement(SystemInfo, null);
         break;
       case "Fibonacci":
-        content = h(FibonacciCalc);
+        content = /* @__PURE__ */ import_react.default.createElement(FibonacciCalc, null);
         break;
       case "File Explorer":
-        content = h(FileExplorer);
+        content = /* @__PURE__ */ import_react.default.createElement(FileExplorer, null);
         break;
       case "Counter":
-        content = h(Counter);
+        content = /* @__PURE__ */ import_react.default.createElement(Counter, null);
         break;
     }
-
-    return h(
-      "div",
-      { className: "app" },
-      h(
-        "header",
-        { className: "header" },
-        h("h1", null, "dioxus-react"),
-        h(
-          "p",
-          null,
-          "React UI \u00B7 Native Rust \u00B7 Powered by ",
-          h(
-            "a",
-            {
-              href: "https://github.com/DioxusLabs/wasm-bindgen-wry",
-              target: "_blank",
-            },
-            "wasm-bindgen-wry"
-          )
-        )
-      ),
-      h(Tabs, { items: TAB_NAMES, active: tab, onSelect: setTab }),
-      h("main", { className: "main" }, content)
-    );
+    return /* @__PURE__ */ import_react.default.createElement("div", { className: "app" }, /* @__PURE__ */ import_react.default.createElement("header", { className: "header" }, /* @__PURE__ */ import_react.default.createElement("h1", null, "dioxus-react"), /* @__PURE__ */ import_react.default.createElement("p", null, "React UI ", "\xB7", " Native Rust ", "\xB7", " Powered by", " ", /* @__PURE__ */ import_react.default.createElement(
+      "a",
+      {
+        href: "https://github.com/DioxusLabs/wasm-bindgen-wry",
+        target: "_blank"
+      },
+      "wasm-bindgen-wry"
+    ))), /* @__PURE__ */ import_react.default.createElement(Tabs, { items: TAB_NAMES, active: tab, onSelect: setTab }), /* @__PURE__ */ import_react.default.createElement("main", { className: "main" }, content));
   }
-
-  // Mount
-  var root = ReactDOM.createRoot(document.getElementById("root"));
-  root.render(h(App));
+  var root = import_client.default.createRoot(document.getElementById("root"));
+  root.render(/* @__PURE__ */ import_react.default.createElement(App, null));
 })();

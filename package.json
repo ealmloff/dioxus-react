@@ -4,9 +4,11 @@
   "description": "Use **React** for your UI while accessing **native Rust** capabilities — powered by [wasm-bindgen-wry](https://github.com/DioxusLabs/wasm-bindgen-wry).",
   "main": "index.js",
   "scripts": {
-    "test": "playwright test",
-    "test:headed": "playwright test --headed",
-    "test:ui": "playwright test --ui"
+    "build": "node esbuild.mjs",
+    "build:watch": "node esbuild.mjs --watch",
+    "test": "npm run build && playwright test",
+    "test:headed": "npm run build && playwright test --headed",
+    "test:ui": "npm run build && playwright test --ui"
   },
   "repository": {
     "type": "git",
@@ -17,6 +19,10 @@
   "license": "ISC",
   "devDependencies": {
     "@playwright/test": "^1.58.2",
-    "serve": "^14.2.6"
+    "@types/react": "^18.0.0",
+    "@types/react-dom": "^18.0.0",
+    "esbuild": "^0.25.0",
+    "serve": "^14.2.6",
+    "typescript": "^5.0.0"
   }
 }

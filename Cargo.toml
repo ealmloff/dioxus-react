@@ -12,7 +12,6 @@ wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-dioxus-asset-resolver = { version = "0.7", default-features = false, features = ["native"] }
 http = "1"
 
 [dependencies.web-sys]
@@ -30,8 +29,8 @@ features = [
 ]
 
 [patch.crates-io]
-wasm-bindgen = { git = "https://github.com/DioxusLabs/wasm-bindgen-wry", path = "shims/wasm-bindgen" }
-wasm-bindgen-macro = { git = "https://github.com/DioxusLabs/wasm-bindgen-wry", path = "shims/wasm-bindgen-macro" }
-web-sys = { git = "https://github.com/ealmloff/wasm-bindgen", branch = "wry-bindgen", path = "crates/web-sys" }
-js-sys = { git = "https://github.com/ealmloff/wasm-bindgen", branch = "wry-bindgen", path = "crates/js-sys" }
-wasm-bindgen-futures = { git = "https://github.com/ealmloff/wasm-bindgen", branch = "wry-bindgen", path = "crates/futures" }
+wasm-bindgen = { git = "https://github.com/DioxusLabs/wasm-bindgen-wry" }
+wasm-bindgen-macro = { git = "https://github.com/DioxusLabs/wasm-bindgen-wry" }
+web-sys = { git = "https://github.com/DioxusLabs/wasm-bindgen-wry" }
+js-sys = { git = "https://github.com/DioxusLabs/wasm-bindgen-wry" }
+wasm-bindgen-futures = { git = "https://github.com/DioxusLabs/wasm-bindgen-wry" }
