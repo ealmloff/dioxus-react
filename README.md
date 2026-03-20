@@ -13,11 +13,14 @@ This project demonstrates the approach [suggested by @ealmloff](https://github.c
 │  ┌──────────────────────────────────┐   │
 │  │         wry webview              │   │
 │  │                                  │   │
-│  │  React 18 (vendored, offline)    │   │
+│  │  React 18 (served via protocol)  │   │
 │  │         ↕ calls                  │   │
 │  │  window.__native.*()             │   │
 │  │         ↕ wasm-bindgen-wry IPC   │   │
 │  └──────────────────────────────────┘   │
+│                                         │
+│  Custom "asset://" wry protocol         │
+│  served by dioxus-asset-resolver        │
 │                                         │
 │  Native Rust functions:                 │
 │  • File system access (read/write)      │
@@ -27,11 +30,11 @@ This project demonstrates the approach [suggested by @ealmloff](https://github.c
 └─────────────────────────────────────────┘
 ```
 
-`wasm-bindgen-wry` re-implements the `wasm-bindgen` API surface so that Rust code runs **natively** (not in WASM) while still communicating with JavaScript through WRY's embedded webview. This gives you:
+Assets (React, the app JS, CSS) are served through a custom wry protocol handler backed by [`dioxus-asset-resolver`](https://docs.rs/dioxus-asset-resolver). This means:
 
-- Full native threading and system access from Rust
-- The familiar `web-sys` / `js-sys` API from Rust
-- Any JavaScript UI framework in the webview (React, Vue, Svelte, etc.)
+- **Fully offline** — no CDN or network access needed
+- **Proper MIME types** — scripts and stylesheets load with correct content types
+- **Standard web loading** — `<script src="asset://localhost/...">` and `<link href="asset://localhost/...">`
 
 ## Demo features
 
@@ -56,18 +59,19 @@ This project demonstrates the approach [suggested by @ealmloff](https://github.c
 cargo run
 ```
 
-React 18 is vendored in `ui/vendor/` and embedded into the binary at compile time — no internet connection is needed at runtime.
+The `build.rs` copies assets next to the output binary so `dioxus-asset-resolver` can find them at runtime.
 
 ## Project structure
 
 ```
-├── Cargo.toml          # Dependencies on wry-launch + wasm-bindgen-wry patches
+├── Cargo.toml          # Dependencies on wry-launch, dioxus-asset-resolver, patches
+├── build.rs            # Copies assets/ to the target directory at build time
 ├── src/
-│   └── main.rs         # Rust entry point: sets up webview, registers native functions
-└── ui/
+│   └── main.rs         # Rust entry point: custom wry protocol + native function bindings
+└── assets/
     ├── app.js          # React application (pure JS, no build step needed)
     ├── style.css       # Application styles
-    └── vendor/         # Vendored React 18 production builds (embedded at compile time)
+    └── vendor/         # Vendored React 18 production builds
         ├── react.production.min.js
         └── react-dom.production.min.js
 ```
@@ -94,18 +98,30 @@ Then call it from React:
 var result = JSON.parse(window.__native.myFunc("hello"));
 ```
 
+## Adding assets
+
+Place files in the `assets/` directory. They're automatically served via the custom
+`asset://` protocol at `asset://localhost/assets/<path>`.
+
+```html
+<!-- In your JS code -->
+<link rel="stylesheet" href="asset://localhost/assets/my-styles.css">
+<script src="asset://localhost/assets/my-script.js"></script>
+<img src="asset://localhost/assets/logo.png">
+```
+
 ## Using a bundled React app (Vite/Bun)
 
-For larger apps, you can use a proper build tool:
+For larger apps, use a proper bundler:
 
-1. Create a `ui/` project with Vite, Bun, or your preferred bundler
-2. Build to a single JS bundle (e.g., `dist/app.js`)
-3. Embed it via `include_str!("../ui/dist/app.js")` in `main.rs`
+1. Create a frontend project with Vite, Bun, or your preferred tool
+2. Build to `assets/dist/`
+3. Reference the bundle as `asset://localhost/assets/dist/app.js`
 
 ## Updating vendored React
 
 ```bash
-cd ui/vendor
+cd assets/vendor
 npm init -y && npm install react@18 react-dom@18
 cp node_modules/react/umd/react.production.min.js .
 cp node_modules/react-dom/umd/react-dom.production.min.js .
@@ -114,6 +130,7 @@ rm -rf node_modules package.json package-lock.json
 
 ## Credits
 
-- [wasm-bindgen-wry](https://github.com/DioxusLabs/wasm-bindgen-wry) by DioxusLabs — the core bridge between native Rust and webview JavaScript
-- [Dioxus](https://github.com/DioxusLabs/dioxus) — the broader Rust UI ecosystem
-- Inspired by the [discussion on React + Dioxus integration](https://github.com/DioxusLabs/dioxus/discussions/5392)
+- [wasm-bindgen-wry](https://github.com/DioxusLabs/wasm-bindgen-wry) by DioxusLabs
+- [dioxus-asset-resolver](https://docs.rs/dioxus-asset-resolver) for asset serving
+- [Dioxus](https://github.com/DioxusLabs/dioxus)
+- Inspired by [DioxusLabs/dioxus#5392](https://github.com/DioxusLabs/dioxus/discussions/5392)
