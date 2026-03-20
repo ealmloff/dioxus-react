@@ -1,3 +1,5 @@
+# **Unverified Halucinated README:**
+
 # dioxus-react
 
 Use **React** for your UI while accessing **native Rust** capabilities — powered by [wasm-bindgen-wry](https://github.com/DioxusLabs/wasm-bindgen-wry).
