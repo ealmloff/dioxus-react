@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>dioxus-react test harness</title>
+  <link rel="stylesheet" href="/assets/style.css" />
+  <script>
+    // Mock window.__native — replaces the Rust native functions with
+    // deterministic JS stubs so Playwright tests are self-contained.
+    window.__native = {
+      getSystemInfo: function () {
+        return JSON.stringify({
+          os: "linux",
+          arch: "x86_64",
+          family: "unix",
+          exe: "/usr/bin/dioxus-react",
+          cwd: "/home/user/dioxus-react",
+        });
+      },
+
+      fibonacci: function (n) {
+        n = Number(n);
+        if (n <= 1) return n;
+        var a = 0, b = 1;
+        for (var i = 2; i <= n; i++) {
+          var c = a + b;
+          a = b;
+          b = c;
+        }
+        return b;
+      },
+
+      readDir: function (path) {
+        // Return a canned directory listing
+        var listings = {
+          "/home/user/dioxus-react": {
+            entries: [
+              { name: "src", isDir: true, size: 0 },
+              { name: "assets", isDir: true, size: 0 },
+              { name: "Cargo.toml", isDir: false, size: 512 },
+              { name: "README.md", isDir: false, size: 2048 },
+            ],
+          },
+          "/home/user/dioxus-react/src": {
+            entries: [
+              { name: "main.rs", isDir: false, size: 4096 },
+            ],
+          },
+        };
+        var result = listings[path];
+        if (result) return JSON.stringify(result);
+        return JSON.stringify({ error: "No such file or directory" });
+      },
+
+      readFile: function (path) {
+        var files = {
+          "/home/user/dioxus-react/Cargo.toml":
+            '{ "content": "[package]\\nname = \\"dioxus-react\\"", "truncated": false, "totalBytes": 35 }',
+          "/home/user/dioxus-react/src/main.rs":
+            '{ "content": "fn main() {}", "truncated": false, "totalBytes": 13 }',
+        };
+        return files[path] || JSON.stringify({ error: "File not found" });
+      },
+
+      writeFile: function () {
+        return JSON.stringify({ ok: true });
+      },
+
+      getEnv: function (key) {
+        var env = { HOME: "/home/user", PATH: "/usr/bin" };
+        return env[key] || null;
+      },
+    };
+  </script>
+</head>
+<body>
+  <div id="root">Loading…</div>
+  <script src="/assets/vendor/react.production.min.js"></script>
+  <script src="/assets/vendor/react-dom.production.min.js"></script>
+  <script src="/assets/app.js"></script>
+</body>
+</html>
