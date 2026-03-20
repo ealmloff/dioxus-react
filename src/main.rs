@@ -24,42 +24,12 @@ fn setup_app() {
     // Register native Rust functions on window.__native
     register_native_functions(&window);
 
-    // Store the React app source so the bootstrap loader can inject it
-    // after React/ReactDOM finish loading from CDN.
-    let app_source = include_str!("../ui/app.js");
-    let escaped = app_source
-        .replace('\\', "\\\\")
-        .replace('`', "\\`")
-        .replace('$', "\\$");
-    let bootstrap = format!(
-        r#"(function() {{
-  function loadScript(src) {{
-    return new Promise(function(resolve, reject) {{
-      var s = document.createElement('script');
-      s.src = src;
-      s.onload = resolve;
-      s.onerror = function() {{ reject(new Error('Failed to load ' + src)); }};
-      document.head.appendChild(s);
-    }});
-  }}
+    // Load vendored React and ReactDOM (embedded at compile time — no network needed)
+    js_sys::eval(include_str!("../ui/vendor/react.production.min.js")).unwrap();
+    js_sys::eval(include_str!("../ui/vendor/react-dom.production.min.js")).unwrap();
 
-  loadScript('https://unpkg.com/react@18/umd/react.production.min.js')
-    .then(function() {{
-      return loadScript('https://unpkg.com/react-dom@18/umd/react-dom.production.min.js');
-    }})
-    .then(function() {{
-      var appScript = document.createElement('script');
-      appScript.textContent = `{}`;
-      document.body.appendChild(appScript);
-    }})
-    .catch(function(err) {{
-      document.getElementById('root').textContent =
-        'Failed to load dependencies: ' + err.message;
-    }});
-}})();"#,
-        escaped
-    );
-    js_sys::eval(&bootstrap).unwrap();
+    // Load the React application
+    js_sys::eval(include_str!("../ui/app.js")).unwrap();
 }
 
 /// Expose native Rust functions to JavaScript via `window.__native`.

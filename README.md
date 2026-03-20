@@ -13,7 +13,7 @@ This project demonstrates the approach [suggested by @ealmloff](https://github.c
 │  ┌──────────────────────────────────┐   │
 │  │         wry webview              │   │
 │  │                                  │   │
-│  │  React 18 (loaded from CDN)      │   │
+│  │  React 18 (vendored, offline)    │   │
 │  │         ↕ calls                  │   │
 │  │  window.__native.*()             │   │
 │  │         ↕ wasm-bindgen-wry IPC   │   │
@@ -56,7 +56,7 @@ This project demonstrates the approach [suggested by @ealmloff](https://github.c
 cargo run
 ```
 
-The app loads React 18 from CDN at startup, so an internet connection is required on first launch.
+React 18 is vendored in `ui/vendor/` and embedded into the binary at compile time — no internet connection is needed at runtime.
 
 ## Project structure
 
@@ -66,7 +66,10 @@ The app loads React 18 from CDN at startup, so an internet connection is require
 │   └── main.rs         # Rust entry point: sets up webview, registers native functions
 └── ui/
     ├── app.js          # React application (pure JS, no build step needed)
-    └── style.css       # Application styles
+    ├── style.css       # Application styles
+    └── vendor/         # Vendored React 18 production builds (embedded at compile time)
+        ├── react.production.min.js
+        └── react-dom.production.min.js
 ```
 
 ## Adding native functions
@@ -93,12 +96,21 @@ var result = JSON.parse(window.__native.myFunc("hello"));
 
 ## Using a bundled React app (Vite/Bun)
 
-For production apps, you can replace the CDN-loaded React with a bundled build:
+For larger apps, you can use a proper build tool:
 
 1. Create a `ui/` project with Vite, Bun, or your preferred bundler
 2. Build to a single JS bundle (e.g., `dist/app.js`)
 3. Embed it via `include_str!("../ui/dist/app.js")` in `main.rs`
-4. Remove the CDN script loading from the bootstrap code
+
+## Updating vendored React
+
+```bash
+cd ui/vendor
+npm init -y && npm install react@18 react-dom@18
+cp node_modules/react/umd/react.production.min.js .
+cp node_modules/react-dom/umd/react-dom.production.min.js .
+rm -rf node_modules package.json package-lock.json
+```
 
 ## Credits
 
