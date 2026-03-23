@@ -7,8 +7,8 @@
     "build": "node esbuild.mjs",
     "build:watch": "node esbuild.mjs --watch",
     "build:all": "npm run build && cargo build",
-    "test": "npm run build:all && node --test --test-concurrency=1 tests/app.test.mjs",
-    "test:debug": "npm run build:all && DEBUG=1 node --test --test-concurrency=1 tests/app.test.mjs"
+    "test": "npm run build:all && playwright test",
+    "test:debug": "npm run build:all && DEBUG=1 playwright test --reporter=list"
   },
   "repository": {
     "type": "git",
