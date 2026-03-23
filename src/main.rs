@@ -2,7 +2,42 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wry_launch::{LaunchBuilder, WebViewBuilder};
 
+use std::collections::VecDeque;
+use std::io::{BufRead, BufReader, Read as _, Write};
+use std::sync::{Arc, Condvar, Mutex};
+
+/// Shared state for the test automation bridge.
+/// External tests send JS commands via TCP; the webview polls for them
+/// via the "test" custom protocol, executes them, and posts results back.
+struct TestBridge {
+    /// Queue of JS strings waiting to be executed in the webview.
+    commands: VecDeque<String>,
+    /// Result of the most recently executed command (None = still pending).
+    result: Option<String>,
+}
+
 fn main() -> wry_launch::wry::Result<()> {
+    let test_port: Option<u16> = std::env::args()
+        .position(|a| a == "--test-port")
+        .and_then(|i| std::env::args().nth(i + 1))
+        .and_then(|v| v.parse().ok());
+
+    // Shared bridge state (only allocated when running in test mode).
+    let bridge: Option<Arc<(Mutex<TestBridge>, Condvar)>> = test_port.map(|_| {
+        Arc::new((
+            Mutex::new(TestBridge {
+                commands: VecDeque::new(),
+                result: None,
+            }),
+            Condvar::new(),
+        ))
+    });
+
+    // Start the TCP test server if --test-port is provided.
+    if let (Some(port), Some(bridge)) = (test_port, bridge.clone()) {
+        std::thread::spawn(move || run_test_server(port, bridge));
+    }
+
     // Register a custom "asset" protocol that serves files from the assets
     // directory next to the binary. This lets the webview load scripts,
     // stylesheets, and other files via `asset://localhost/…` URLs without
@@ -46,10 +81,25 @@ fn main() -> wry_launch::wry::Result<()> {
             }
         });
 
+    // When running in test mode, start an HTTP server on a second port for the
+    // webview polling bridge. We deliberately avoid custom protocols for this
+    // because concurrent custom-protocol requests can corrupt wry-bindgen's
+    // internal IPC buffer, causing "u32 buffer empty" panics.
+    let http_bridge_port: Option<u16> = if let Some(ref bridge) = bridge {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("bind ephemeral port for HTTP bridge");
+        let port = listener.local_addr().unwrap().port();
+        let bridge = bridge.clone();
+        std::thread::spawn(move || run_http_bridge(listener, bridge));
+        Some(port)
+    } else {
+        None
+    };
+
     LaunchBuilder::new()
         .webview(webview)
-        .run(|| async {
-            setup_app();
+        .run(move || async move {
+            setup_app(http_bridge_port);
             std::future::pending::<()>().await
         })
 }
@@ -80,7 +130,137 @@ fn hex_val(b: u8) -> Option<u8> {
     }
 }
 
-fn setup_app() {
+/// Minimal HTTP/1.1 server for the webview polling bridge.
+///
+/// The webview polls `GET /poll?result=<prev_result>` to deliver results and
+/// receive the next command. Responses are JSON `{"cmd":"..."}` or `{}`.
+///
+/// This avoids custom protocol requests that conflict with wry-bindgen's
+/// internal `wry://` protocol and cause IPC buffer corruption.
+fn run_http_bridge(listener: std::net::TcpListener, bridge: Arc<(Mutex<TestBridge>, Condvar)>) {
+    let port = listener.local_addr().unwrap().port();
+    eprintln!("[test-bridge] HTTP bridge listening on 127.0.0.1:{port}");
+
+    for stream in listener.incoming() {
+        let Ok(mut stream) = stream else { continue };
+        let bridge = bridge.clone();
+
+        // Handle each request synchronously on the listener thread since the
+        // webview only sends one request at a time.
+        let mut buf = [0u8; 4096];
+        let n = match stream.read(&mut buf) {
+            Ok(n) if n > 0 => n,
+            _ => continue,
+        };
+        let request = String::from_utf8_lossy(&buf[..n]);
+
+        // Extract the query string from "GET /poll?result=... HTTP/1.1"
+        let first_line = request.lines().next().unwrap_or("");
+        let path = first_line.split_whitespace().nth(1).unwrap_or("/");
+
+        if let Some(idx) = path.find("?result=") {
+            let encoded = &path[idx + 8..];
+            let decoded = percent_decode(encoded);
+            let (lock, cvar) = &*bridge;
+            let mut state = lock.lock().unwrap();
+            state.result = Some(decoded);
+            cvar.notify_all();
+        }
+
+        let (lock, _) = &*bridge;
+        let mut state = lock.lock().unwrap();
+        let body = match state.commands.pop_front() {
+            Some(cmd) => serde_json::json!({ "cmd": cmd }).to_string(),
+            None => "{}".to_string(),
+        };
+        drop(state);
+
+        let response = format!(
+            "HTTP/1.1 200 OK\r\n\
+             Content-Type: application/json\r\n\
+             Access-Control-Allow-Origin: *\r\n\
+             Content-Length: {}\r\n\
+             Connection: close\r\n\
+             \r\n\
+             {}",
+            body.len(),
+            body
+        );
+        let _ = stream.write_all(response.as_bytes());
+    }
+}
+
+/// TCP server for the test bridge.
+///
+/// External test process (Node.js) connects via plain TCP and sends
+/// newline-delimited JSON commands:
+///   → {"eval": "<javascript>"}\n
+///   ← {"result": "<json-encoded return value>"}\n
+///
+/// The server enqueues the JS into the shared bridge, waits for the
+/// webview polling script to execute it and post the result, then returns it.
+fn run_test_server(port: u16, bridge: Arc<(Mutex<TestBridge>, Condvar)>) {
+    let listener = std::net::TcpListener::bind(format!("127.0.0.1:{port}"))
+        .unwrap_or_else(|e| panic!("test server: failed to bind port {port}: {e}"));
+    eprintln!("[test-bridge] listening on 127.0.0.1:{port}");
+
+    for stream in listener.incoming() {
+        let Ok(stream) = stream else { continue };
+        let bridge = bridge.clone();
+        std::thread::spawn(move || {
+            let reader = BufReader::new(stream.try_clone().unwrap());
+            let mut writer = stream;
+            for line in reader.lines() {
+                let Ok(line) = line else { break };
+                let line = line.trim().to_string();
+                if line.is_empty() {
+                    continue;
+                }
+                let cmd: serde_json::Value = match serde_json::from_str(&line) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        let err = serde_json::json!({"error": e.to_string()}).to_string();
+                        let _ = writeln!(writer, "{err}");
+                        continue;
+                    }
+                };
+                if let Some(js) = cmd.get("eval").and_then(|v| v.as_str()) {
+                    let (lock, cvar) = &*bridge;
+                    {
+                        let mut state = lock.lock().unwrap();
+                        state.result = None;
+                        state.commands.push_back(js.to_string());
+                    }
+                    let result = {
+                        let mut state = lock.lock().unwrap();
+                        let timeout = std::time::Duration::from_secs(15);
+                        let deadline = std::time::Instant::now() + timeout;
+                        loop {
+                            if let Some(r) = state.result.take() {
+                                break r;
+                            }
+                            let remaining =
+                                deadline.saturating_duration_since(std::time::Instant::now());
+                            if remaining.is_zero() {
+                                break serde_json::json!({"error": "timeout"}).to_string();
+                            }
+                            let (s, _) = cvar.wait_timeout(state, remaining).unwrap();
+                            state = s;
+                        }
+                    };
+                    let resp = serde_json::json!({ "result": result }).to_string();
+                    let _ = writeln!(writer, "{resp}");
+                } else {
+                    let err =
+                        serde_json::json!({"error": "expected {\"eval\": \"...\"}"}).to_string();
+                    let _ = writeln!(writer, "{err}");
+                }
+            }
+        });
+    }
+}
+
+fn setup_app(http_bridge_port: Option<u16>) {
     let window = web_sys::window().expect("should have a window");
     let document = window.document().expect("window should have a document");
     let head = document.head().expect("document should have a head");
@@ -99,14 +279,62 @@ fn setup_app() {
     // Create the React mount point
     body.set_inner_html(r#"<div id="root">Loading…</div>"#);
 
-    // Expose native Rust bridge to JavaScript as window.__native
-    let bridge: JsValue = NativeBridge {}.into();
+    // Expose native Rust bridge to JavaScript as a plain object with closures.
+    let bridge = js_sys::Object::new();
+
+    let get_system_info =
+        Closure::wrap(Box::new(native_get_system_info) as Box<dyn Fn() -> String>);
+    js_sys::Reflect::set(
+        &bridge,
+        &"getSystemInfo".into(),
+        get_system_info.as_ref().unchecked_ref(),
+    )
+    .unwrap();
+    get_system_info.forget();
+
+    let fibonacci = Closure::wrap(Box::new(native_fibonacci) as Box<dyn Fn(f64) -> f64>);
+    js_sys::Reflect::set(
+        &bridge,
+        &"fibonacci".into(),
+        fibonacci.as_ref().unchecked_ref(),
+    )
+    .unwrap();
+    fibonacci.forget();
+
+    let read_dir = Closure::wrap(Box::new(native_read_dir) as Box<dyn Fn(String) -> String>);
+    js_sys::Reflect::set(&bridge, &"readDir".into(), read_dir.as_ref().unchecked_ref()).unwrap();
+    read_dir.forget();
+
+    let read_file = Closure::wrap(Box::new(native_read_file) as Box<dyn Fn(String) -> String>);
+    js_sys::Reflect::set(
+        &bridge,
+        &"readFile".into(),
+        read_file.as_ref().unchecked_ref(),
+    )
+    .unwrap();
+    read_file.forget();
+
+    let write_file = Closure::wrap(
+        Box::new(native_write_file) as Box<dyn Fn(String, String) -> String>,
+    );
+    js_sys::Reflect::set(
+        &bridge,
+        &"writeFile".into(),
+        write_file.as_ref().unchecked_ref(),
+    )
+    .unwrap();
+    write_file.forget();
+
+    let get_env = Closure::wrap(Box::new(native_get_env) as Box<dyn Fn(String) -> JsValue>);
+    js_sys::Reflect::set(&bridge, &"getEnv".into(), get_env.as_ref().unchecked_ref()).unwrap();
+    get_env.forget();
+
     js_sys::Reflect::set(&window, &"__native".into(), &bridge).unwrap();
 
     // Load React, ReactDOM, then the app — each via the asset protocol.
     // Scripts are chained through onload to guarantee execution order.
-    js_sys::eval(
-        r#"(function() {
+    // In test mode, also start the command-polling loop after the app loads.
+    let mut script = String::from(r#"(function() {
   function loadScript(src) {
     return new Promise(function(resolve, reject) {
       var s = document.createElement('script');
@@ -123,122 +351,147 @@ fn setup_app() {
     })
     .then(function() {
       return loadScript('asset://localhost/assets/app.js');
-    })
+    })"#);
+
+    if let Some(port) = http_bridge_port {
+        let poll_snippet = format!(r#"
+    .then(function() {{
+      console.log('[test-bridge] polling script starting on port {port}');
+      var lastResult = null;
+      function poll() {{
+        var url = 'http://127.0.0.1:{port}/poll' + (lastResult !== null ? '?result=' + encodeURIComponent(lastResult) : '');
+        lastResult = null;
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', url, true);
+        xhr.onload = function() {{
+          var data;
+          try {{ data = JSON.parse(xhr.responseText); }} catch(e) {{ data = {{}}; }}
+          if (data.cmd) {{
+            var result;
+            try {{
+              var value = (0, eval)(data.cmd);
+              result = JSON.stringify(value);
+              if (typeof result === 'undefined') {{
+                result = 'null';
+              }}
+            }} catch (e) {{
+              result = JSON.stringify({{__error: e.message, __stack: e.stack}});
+            }}
+            lastResult = result;
+            setTimeout(poll, 0);
+          }} else {{
+            setTimeout(poll, 30);
+          }}
+        }};
+        xhr.onerror = function() {{ setTimeout(poll, 100); }};
+        xhr.send();
+      }}
+      poll();
+    }})"#);
+        script.push_str(&poll_snippet);
+    }
+
+    script.push_str(r#"
     .catch(function(err) {
       document.getElementById('root').textContent =
         'Failed to load app: ' + err.message;
-    });
-})();"#,
-    )
-    .unwrap();
+    })
+})();"#);
+
+    js_sys::eval(&script).unwrap();
 }
 
-/// Native Rust bridge exposed to JavaScript as `window.__native`.
-///
-/// React components call these methods to access native capabilities
-/// (filesystem, system info, computation) unavailable in a browser sandbox.
-#[wasm_bindgen]
-pub struct NativeBridge;
+fn native_get_system_info() -> String {
+    serde_json::json!({
+        "os": std::env::consts::OS,
+        "arch": std::env::consts::ARCH,
+        "family": std::env::consts::FAMILY,
+        "exe": std::env::current_exe()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default(),
+        "cwd": std::env::current_dir()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default(),
+    })
+    .to_string()
+}
 
-#[wasm_bindgen]
-impl NativeBridge {
-    #[wasm_bindgen(js_name = "getSystemInfo")]
-    pub fn get_system_info(&self) -> String {
-        serde_json::json!({
-            "os": std::env::consts::OS,
-            "arch": std::env::consts::ARCH,
-            "family": std::env::consts::FAMILY,
-            "exe": std::env::current_exe()
-                .map(|p| p.display().to_string())
-                .unwrap_or_default(),
-            "cwd": std::env::current_dir()
-                .map(|p| p.display().to_string())
-                .unwrap_or_default(),
-        })
-        .to_string()
-    }
-
-    pub fn fibonacci(&self, n: f64) -> f64 {
-        let n = n as u64;
-        let result = if n <= 1 {
-            n
-        } else {
-            let (mut a, mut b) = (0u64, 1u64);
-            for _ in 2..=n {
-                let c = a.wrapping_add(b);
-                a = b;
-                b = c;
-            }
-            b
-        };
-        result as f64
-    }
-
-    #[wasm_bindgen(js_name = "readDir")]
-    pub fn read_dir(&self, path: String) -> String {
-        match std::fs::read_dir(&path) {
-            Ok(entries) => {
-                let mut items: Vec<serde_json::Value> = entries
-                    .filter_map(|e| e.ok())
-                    .map(|e| {
-                        let meta = e.metadata().ok();
-                        serde_json::json!({
-                            "name": e.file_name().to_string_lossy(),
-                            "isDir": meta.as_ref().map(|m| m.is_dir()).unwrap_or(false),
-                            "size": meta.as_ref().map(|m| m.len()).unwrap_or(0),
-                        })
-                    })
-                    .collect();
-                items.sort_by(|a, b| {
-                    let a_dir = a["isDir"].as_bool().unwrap_or(false);
-                    let b_dir = b["isDir"].as_bool().unwrap_or(false);
-                    b_dir.cmp(&a_dir).then_with(|| {
-                        a["name"]
-                            .as_str()
-                            .unwrap_or("")
-                            .cmp(b["name"].as_str().unwrap_or(""))
-                    })
-                });
-                serde_json::json!({ "entries": items }).to_string()
-            }
-            Err(e) => serde_json::json!({ "error": e.to_string() }).to_string(),
+fn native_fibonacci(n: f64) -> f64 {
+    let n = n as u64;
+    let result = if n <= 1 {
+        n
+    } else {
+        let (mut a, mut b) = (0u64, 1u64);
+        for _ in 2..=n {
+            let c = a.wrapping_add(b);
+            a = b;
+            b = c;
         }
-    }
+        b
+    };
+    result as f64
+}
 
-    #[wasm_bindgen(js_name = "readFile")]
-    pub fn read_file(&self, path: String) -> String {
-        match std::fs::read_to_string(&path) {
-            Ok(content) => {
-                let truncated = content.len() > 10_000;
-                let display = if truncated {
-                    &content[..10_000]
-                } else {
-                    &content
-                };
-                serde_json::json!({
-                    "content": display,
-                    "truncated": truncated,
-                    "totalBytes": content.len(),
+fn native_read_dir(path: String) -> String {
+    match std::fs::read_dir(&path) {
+        Ok(entries) => {
+            let mut items: Vec<serde_json::Value> = entries
+                .filter_map(|e| e.ok())
+                .map(|e| {
+                    let meta = e.metadata().ok();
+                    serde_json::json!({
+                        "name": e.file_name().to_string_lossy(),
+                        "isDir": meta.as_ref().map(|m| m.is_dir()).unwrap_or(false),
+                        "size": meta.as_ref().map(|m| m.len()).unwrap_or(0),
+                    })
                 })
-                .to_string()
-            }
-            Err(e) => serde_json::json!({ "error": e.to_string() }).to_string(),
+                .collect();
+            items.sort_by(|a, b| {
+                let a_dir = a["isDir"].as_bool().unwrap_or(false);
+                let b_dir = b["isDir"].as_bool().unwrap_or(false);
+                b_dir.cmp(&a_dir).then_with(|| {
+                    a["name"]
+                        .as_str()
+                        .unwrap_or("")
+                        .cmp(b["name"].as_str().unwrap_or(""))
+                })
+            });
+            serde_json::json!({ "entries": items }).to_string()
         }
+        Err(e) => serde_json::json!({ "error": e.to_string() }).to_string(),
     }
+}
 
-    #[wasm_bindgen(js_name = "writeFile")]
-    pub fn write_file(&self, path: String, content: String) -> String {
-        match std::fs::write(&path, &content) {
-            Ok(()) => serde_json::json!({ "ok": true }).to_string(),
-            Err(e) => serde_json::json!({ "error": e.to_string() }).to_string(),
+fn native_read_file(path: String) -> String {
+    match std::fs::read_to_string(&path) {
+        Ok(content) => {
+            let truncated = content.len() > 10_000;
+            let display = if truncated {
+                &content[..10_000]
+            } else {
+                &content
+            };
+            serde_json::json!({
+                "content": display,
+                "truncated": truncated,
+                "totalBytes": content.len(),
+            })
+            .to_string()
         }
+        Err(e) => serde_json::json!({ "error": e.to_string() }).to_string(),
     }
+}
 
-    #[wasm_bindgen(js_name = "getEnv")]
-    pub fn get_env(&self, key: String) -> JsValue {
-        match std::env::var(&key) {
-            Ok(val) => JsValue::from_str(&val),
-            Err(_) => JsValue::NULL,
-        }
+fn native_write_file(path: String, content: String) -> String {
+    match std::fs::write(&path, &content) {
+        Ok(()) => serde_json::json!({ "ok": true }).to_string(),
+        Err(e) => serde_json::json!({ "error": e.to_string() }).to_string(),
+    }
+}
+
+fn native_get_env(key: String) -> JsValue {
+    match std::env::var(&key) {
+        Ok(val) => JsValue::from_str(&val),
+        Err(_) => JsValue::NULL,
     }
 }

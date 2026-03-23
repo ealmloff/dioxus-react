@@ -6,9 +6,9 @@
   "scripts": {
     "build": "node esbuild.mjs",
     "build:watch": "node esbuild.mjs --watch",
-    "test": "npm run build && playwright test",
-    "test:headed": "npm run build && playwright test --headed",
-    "test:ui": "npm run build && playwright test --ui"
+    "build:all": "npm run build && cargo build",
+    "test": "npm run build:all && node --test --test-concurrency=1 tests/app.test.mjs",
+    "test:debug": "npm run build:all && DEBUG=1 node --test --test-concurrency=1 tests/app.test.mjs"
   },
   "repository": {
     "type": "git",
