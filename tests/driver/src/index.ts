@@ -1,0 +1,1 @@
+export { PlaywrightWryProxy } from "./proxy";

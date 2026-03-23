@@ -1,5 +1,6 @@
 // React app loaded via wasm-bindgen-wry.
-// Native Rust functions are available on window.__native.
+// Native Rust functions are exposed via the NativeBridge wasm-bindgen class,
+// which the runtime automatically places on `window.NativeBridge`.
 
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import ReactDOM from "react-dom/client";
@@ -8,7 +9,7 @@ import ReactDOM from "react-dom/client";
 // Types
 // ---------------------------------------------------------------------------
 
-interface NativeBridge {
+interface INativeBridge {
   getSystemInfo(): string;
   fibonacci(n: number): number;
   readDir(path: string): string;
@@ -19,7 +20,9 @@ interface NativeBridge {
 
 declare global {
   interface Window {
-    __native: NativeBridge;
+    NativeBridge?: {
+      new(): INativeBridge;
+    };
   }
 }
 
@@ -46,11 +49,27 @@ interface ReadFileResult {
 }
 
 // ---------------------------------------------------------------------------
+// Singleton bridge instance — created once from the wasm-bindgen class.
+// ---------------------------------------------------------------------------
+
+function createNativeBridge(): INativeBridge {
+  if (window.NativeBridge) return window.NativeBridge.new();
+  throw new Error("Native bridge is not available");
+}
+
+let native: INativeBridge | null = null;
+
+function getNativeBridge(): INativeBridge {
+  if (!native) native = createNativeBridge();
+  return native;
+}
+
+// ---------------------------------------------------------------------------
 // Helper: call a native Rust function and parse the JSON result
 // ---------------------------------------------------------------------------
 
 function callNative(fn: string, ...args: unknown[]): unknown {
-  const result = (window.__native as unknown as Record<string, Function>)[fn](...args);
+  const result = (getNativeBridge() as unknown as Record<string, Function>)[fn](...args);
   if (typeof result === "string") {
     try {
       return JSON.parse(result);
@@ -128,7 +147,7 @@ function FibonacciCalc() {
 
   const calculate = useCallback(() => {
     const start = performance.now();
-    const val = window.__native.fibonacci(n);
+    const val = getNativeBridge().fibonacci(n);
     const ms = (performance.now() - start).toFixed(3);
     setResult(val);
     setElapsed(ms);
@@ -169,9 +188,7 @@ function FibonacciCalc() {
 // ---------------------------------------------------------------------------
 
 function FileExplorer() {
-  const [currentPath, setCurrentPath] = useState(
-    (callNative("getSystemInfo") as SystemInfoData).cwd || "."
-  );
+  const [currentPath, setCurrentPath] = useState(".");
   const [entries, setEntries] = useState<DirEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [fileContent, setFileContent] = useState<string | null>(null);
@@ -193,8 +210,10 @@ function FileExplorer() {
   }, []);
 
   useEffect(() => {
-    loadDir(currentPath);
-  }, []);
+    const cwd = (callNative("getSystemInfo") as SystemInfoData).cwd || ".";
+    setCurrentPath(cwd);
+    loadDir(cwd);
+  }, [loadDir]);
 
   const openEntry = useCallback(
     (entry: DirEntry) => {

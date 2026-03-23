@@ -43,8 +43,17 @@
   // assets/src/App.tsx
   var import_react = __toESM(require_react());
   var import_client = __toESM(require_client());
+  function createNativeBridge() {
+    if (window.NativeBridge) return window.NativeBridge.new();
+    throw new Error("Native bridge is not available");
+  }
+  var native = null;
+  function getNativeBridge() {
+    if (!native) native = createNativeBridge();
+    return native;
+  }
   function callNative(fn, ...args) {
-    const result = window.__native[fn](...args);
+    const result = getNativeBridge()[fn](...args);
     if (typeof result === "string") {
       try {
         return JSON.parse(result);
@@ -79,7 +88,7 @@
     const [elapsed, setElapsed] = (0, import_react.useState)(null);
     const calculate = (0, import_react.useCallback)(() => {
       const start = performance.now();
-      const val = window.__native.fibonacci(n);
+      const val = getNativeBridge().fibonacci(n);
       const ms = (performance.now() - start).toFixed(3);
       setResult(val);
       setElapsed(ms);
@@ -96,9 +105,7 @@
     )), /* @__PURE__ */ import_react.default.createElement("button", { className: "btn", onClick: calculate }, "Calculate")), result !== null && /* @__PURE__ */ import_react.default.createElement("div", { className: "result" }, /* @__PURE__ */ import_react.default.createElement("span", { className: "result-label" }, "Result: "), /* @__PURE__ */ import_react.default.createElement("span", { className: "result-value" }, String(result)), /* @__PURE__ */ import_react.default.createElement("span", { className: "result-time" }, " (", elapsed, " ms)")));
   }
   function FileExplorer() {
-    const [currentPath, setCurrentPath] = (0, import_react.useState)(
-      callNative("getSystemInfo").cwd || "."
-    );
+    const [currentPath, setCurrentPath] = (0, import_react.useState)(".");
     const [entries, setEntries] = (0, import_react.useState)([]);
     const [error, setError] = (0, import_react.useState)(null);
     const [fileContent, setFileContent] = (0, import_react.useState)(null);
@@ -118,8 +125,10 @@
       setViewingFile(null);
     }, []);
     (0, import_react.useEffect)(() => {
-      loadDir(currentPath);
-    }, []);
+      const cwd = callNative("getSystemInfo").cwd || ".";
+      setCurrentPath(cwd);
+      loadDir(cwd);
+    }, [loadDir]);
     const openEntry = (0, import_react.useCallback)(
       (entry) => {
         var _a;

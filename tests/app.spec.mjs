@@ -1,9 +1,9 @@
 import { test, expect, webkit } from "@playwright/test";
-import { PlaywrightWryProxy } from "./playwright-proxy.mjs";
+import { PlaywrightWryProxy } from "./driver/dist/index.mjs";
 
 test.describe.configure({ mode: "serial" });
 
-/** @type {import("./playwright-proxy.mjs").PlaywrightWryProxy | null} */
+/** @type {import("./driver/dist/index.mjs").PlaywrightWryProxy | null} */
 let proxy = null;
 /** @type {import("@playwright/test").Browser | null} */
 let browser = null;

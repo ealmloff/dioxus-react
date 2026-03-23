@@ -6,7 +6,7 @@ description = "React + native Rust desktop app using wasm-bindgen-wry"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-wry-launch = { git = "https://github.com/DioxusLabs/wasm-bindgen-wry", version = "0.1.0" }
+wry-launch = { git = "https://github.com/ealmloff/wasm-bindgen-wry-1.git", branch = "codex/typed-struct-export-fix", version = "0.1.0" }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
@@ -29,8 +29,8 @@ features = [
 ]
 
 [patch.crates-io]
-wasm-bindgen = { git = "https://github.com/DioxusLabs/wasm-bindgen-wry" }
-wasm-bindgen-macro = { git = "https://github.com/DioxusLabs/wasm-bindgen-wry" }
-web-sys = { git = "https://github.com/DioxusLabs/wasm-bindgen-wry" }
-js-sys = { git = "https://github.com/DioxusLabs/wasm-bindgen-wry" }
-wasm-bindgen-futures = { git = "https://github.com/DioxusLabs/wasm-bindgen-wry" }
+wasm-bindgen = { git = "https://github.com/ealmloff/wasm-bindgen-wry-1.git", branch = "codex/typed-struct-export-fix", package = "wasm-bindgen" }
+wasm-bindgen-macro = { git = "https://github.com/ealmloff/wasm-bindgen-wry-1.git", branch = "codex/typed-struct-export-fix", package = "wasm-bindgen-macro" }
+web-sys = { git = "https://github.com/ealmloff/wasm-bindgen-wry-1.git", branch = "codex/typed-struct-export-fix", package = "web-sys" }
+js-sys = { git = "https://github.com/ealmloff/wasm-bindgen-wry-1.git", branch = "codex/typed-struct-export-fix", package = "js-sys" }
+wasm-bindgen-futures = { git = "https://github.com/ealmloff/wasm-bindgen-wry-1.git", branch = "codex/typed-struct-export-fix", package = "wasm-bindgen-futures" }

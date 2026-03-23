@@ -1,10 +1,123 @@
-use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
+use wasm_bindgen::prelude::*;
 use wry_launch::{LaunchBuilder, WebViewBuilder};
 
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read as _, Write};
 use std::sync::{Arc, Condvar, Mutex};
+
+// ---------------------------------------------------------------------------
+// Native bridge — exported to JavaScript via wasm-bindgen as a proper class.
+// The wry-bindgen runtime automatically places this on `window.NativeBridge`.
+// ---------------------------------------------------------------------------
+
+#[wasm_bindgen]
+pub struct NativeBridge {}
+
+#[wasm_bindgen]
+impl NativeBridge {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> NativeBridge {
+        NativeBridge {}
+    }
+
+    #[wasm_bindgen(js_name = "getSystemInfo")]
+    pub fn get_system_info(&self) -> String {
+        serde_json::json!({
+            "os": std::env::consts::OS,
+            "arch": std::env::consts::ARCH,
+            "family": std::env::consts::FAMILY,
+            "exe": std::env::current_exe()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default(),
+            "cwd": std::env::current_dir()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default(),
+        })
+        .to_string()
+    }
+
+    pub fn fibonacci(&self, n: f64) -> f64 {
+        let n = n as u64;
+        let result = if n <= 1 {
+            n
+        } else {
+            let (mut a, mut b) = (0u64, 1u64);
+            for _ in 2..=n {
+                let c = a.wrapping_add(b);
+                a = b;
+                b = c;
+            }
+            b
+        };
+        result as f64
+    }
+
+    #[wasm_bindgen(js_name = "readDir")]
+    pub fn read_dir(&self, path: String) -> String {
+        match std::fs::read_dir(&path) {
+            Ok(entries) => {
+                let mut items: Vec<serde_json::Value> = entries
+                    .filter_map(|e| e.ok())
+                    .map(|e| {
+                        let meta = e.metadata().ok();
+                        serde_json::json!({
+                            "name": e.file_name().to_string_lossy(),
+                            "isDir": meta.as_ref().map(|m| m.is_dir()).unwrap_or(false),
+                            "size": meta.as_ref().map(|m| m.len()).unwrap_or(0),
+                        })
+                    })
+                    .collect();
+                items.sort_by(|a, b| {
+                    let a_dir = a["isDir"].as_bool().unwrap_or(false);
+                    let b_dir = b["isDir"].as_bool().unwrap_or(false);
+                    b_dir.cmp(&a_dir).then_with(|| {
+                        a["name"]
+                            .as_str()
+                            .unwrap_or("")
+                            .cmp(b["name"].as_str().unwrap_or(""))
+                    })
+                });
+                serde_json::json!({ "entries": items }).to_string()
+            }
+            Err(e) => serde_json::json!({ "error": e.to_string() }).to_string(),
+        }
+    }
+
+    #[wasm_bindgen(js_name = "readFile")]
+    pub fn read_file(&self, path: String) -> String {
+        match std::fs::read_to_string(&path) {
+            Ok(content) => {
+                let truncated = content.len() > 10_000;
+                let display = if truncated {
+                    &content[..10_000]
+                } else {
+                    &content
+                };
+                serde_json::json!({
+                    "content": display,
+                    "truncated": truncated,
+                    "totalBytes": content.len(),
+                })
+                .to_string()
+            }
+            Err(e) => serde_json::json!({ "error": e.to_string() }).to_string(),
+        }
+    }
+
+    #[wasm_bindgen(js_name = "writeFile")]
+    pub fn write_file(&self, path: String, content: String) -> String {
+        match std::fs::write(&path, &content) {
+            Ok(()) => serde_json::json!({ "ok": true }).to_string(),
+            Err(e) => serde_json::json!({ "error": e.to_string() }).to_string(),
+        }
+    }
+
+    #[wasm_bindgen(js_name = "getEnv")]
+    pub fn get_env(&self, key: String) -> Option<String> {
+        std::env::var(&key).ok()
+    }
+}
 
 /// Shared state for the test automation bridge.
 /// External tests send JS commands via TCP; the webview polls for them
@@ -140,6 +253,7 @@ fn hex_val(b: u8) -> Option<u8> {
 fn run_http_bridge(listener: std::net::TcpListener, bridge: Arc<(Mutex<TestBridge>, Condvar)>) {
     let port = listener.local_addr().unwrap().port();
     eprintln!("[test-bridge] HTTP bridge listening on 127.0.0.1:{port}");
+    let mut request_count = 0usize;
 
     for stream in listener.incoming() {
         let Ok(mut stream) = stream else { continue };
@@ -157,10 +271,17 @@ fn run_http_bridge(listener: std::net::TcpListener, bridge: Arc<(Mutex<TestBridg
         // Extract the query string from "GET /poll?result=... HTTP/1.1"
         let first_line = request.lines().next().unwrap_or("");
         let path = first_line.split_whitespace().nth(1).unwrap_or("/");
+        request_count += 1;
+        if request_count <= 5 {
+            eprintln!("[test-bridge] HTTP poll #{request_count}: {path}");
+        }
 
         if let Some(idx) = path.find("?result=") {
             let encoded = &path[idx + 8..];
             let decoded = percent_decode(encoded);
+            if request_count <= 5 || decoded.contains("__error") {
+                eprintln!("[test-bridge] HTTP result #{request_count}: {decoded}");
+            }
             let (lock, cvar) = &*bridge;
             let mut state = lock.lock().unwrap();
             state.result = Some(decoded);
@@ -279,62 +400,15 @@ fn setup_app(http_bridge_port: Option<u16>) {
     // Create the React mount point
     body.set_inner_html(r#"<div id="root">Loading…</div>"#);
 
-    // Expose native Rust bridge to JavaScript as a plain object with closures.
-    let bridge = js_sys::Object::new();
-
-    let get_system_info =
-        Closure::wrap(Box::new(native_get_system_info) as Box<dyn Fn() -> String>);
-    js_sys::Reflect::set(
-        &bridge,
-        &"getSystemInfo".into(),
-        get_system_info.as_ref().unchecked_ref(),
-    )
-    .unwrap();
-    get_system_info.forget();
-
-    let fibonacci = Closure::wrap(Box::new(native_fibonacci) as Box<dyn Fn(f64) -> f64>);
-    js_sys::Reflect::set(
-        &bridge,
-        &"fibonacci".into(),
-        fibonacci.as_ref().unchecked_ref(),
-    )
-    .unwrap();
-    fibonacci.forget();
-
-    let read_dir = Closure::wrap(Box::new(native_read_dir) as Box<dyn Fn(String) -> String>);
-    js_sys::Reflect::set(&bridge, &"readDir".into(), read_dir.as_ref().unchecked_ref()).unwrap();
-    read_dir.forget();
-
-    let read_file = Closure::wrap(Box::new(native_read_file) as Box<dyn Fn(String) -> String>);
-    js_sys::Reflect::set(
-        &bridge,
-        &"readFile".into(),
-        read_file.as_ref().unchecked_ref(),
-    )
-    .unwrap();
-    read_file.forget();
-
-    let write_file = Closure::wrap(
-        Box::new(native_write_file) as Box<dyn Fn(String, String) -> String>,
-    );
-    js_sys::Reflect::set(
-        &bridge,
-        &"writeFile".into(),
-        write_file.as_ref().unchecked_ref(),
-    )
-    .unwrap();
-    write_file.forget();
-
-    let get_env = Closure::wrap(Box::new(native_get_env) as Box<dyn Fn(String) -> JsValue>);
-    js_sys::Reflect::set(&bridge, &"getEnv".into(), get_env.as_ref().unchecked_ref()).unwrap();
-    get_env.forget();
-
-    js_sys::Reflect::set(&window, &"__native".into(), &bridge).unwrap();
+    // The NativeBridge struct is exported as a JS class by wasm-bindgen-wry.
+    // The React app creates an instance lazily with `window.NativeBridge.new()`.
 
     // Load React, ReactDOM, then the app — each via the asset protocol.
     // Scripts are chained through onload to guarantee execution order.
-    // In test mode, also start the command-polling loop after the app loads.
-    let mut script = String::from(r#"(function() {
+    // In test mode, install the logging/polling bridge before loading assets
+    // so startup failures remain observable.
+    let mut script = String::from(
+        r#"(function() {
   function loadScript(src) {
     return new Promise(function(resolve, reject) {
       var s = document.createElement('script');
@@ -344,154 +418,133 @@ fn setup_app(http_bridge_port: Option<u16>) {
       document.head.appendChild(s);
     });
   }
+"#,
+    );
 
+    if let Some(port) = http_bridge_port {
+        let bridge_snippet = format!(
+            r#"
+  window.__testBridgeLogs = [];
+  (function() {{
+    var logs = window.__testBridgeLogs;
+    function serialize(value) {{
+      if (value && value.stack) {{
+        return String(value.stack);
+      }}
+      if (typeof value === 'string') {{
+        return value;
+      }}
+      try {{
+        return JSON.stringify(value);
+      }} catch (_) {{
+        return String(value);
+      }}
+    }}
+
+    function pushLog(type, argsLike) {{
+      var parts = [];
+      for (var i = 0; i < argsLike.length; i += 1) {{
+        parts.push(serialize(argsLike[i]));
+      }}
+      logs.push({{
+        type: type,
+        message: parts.join(' '),
+        timestamp: Date.now()
+      }});
+      if (logs.length > 200) {{
+        logs.shift();
+      }}
+    }}
+
+    ['log', 'warn', 'error'].forEach(function(type) {{
+      var original = console[type];
+      console[type] = function() {{
+        pushLog(type, arguments);
+        if (original) {{
+          return original.apply(this, arguments);
+        }}
+      }};
+    }});
+
+    window.addEventListener('error', function(event) {{
+      pushLog('error', [
+        event.message || 'window error',
+        event.error && event.error.stack ? event.error.stack : ''
+      ]);
+    }});
+
+    window.addEventListener('unhandledrejection', function(event) {{
+      var reason = event.reason;
+      pushLog('error', [
+        'unhandledrejection',
+        reason && reason.stack ? reason.stack : serialize(reason)
+      ]);
+    }});
+
+    console.log('[test-bridge] polling script starting on port {port}');
+    var lastResult = null;
+    function poll() {{
+      var url = 'http://127.0.0.1:{port}/poll' + (lastResult !== null ? '?result=' + encodeURIComponent(lastResult) : '');
+      lastResult = null;
+      var xhr = new XMLHttpRequest();
+      xhr.open('GET', url, true);
+      xhr.onload = function() {{
+        var data;
+        try {{ data = JSON.parse(xhr.responseText); }} catch(e) {{ data = {{}}; }}
+        if (data.cmd) {{
+          var result;
+          try {{
+            var value = (0, eval)(data.cmd);
+            result = JSON.stringify(value);
+            if (typeof result === 'undefined') {{
+              result = 'null';
+            }}
+          }} catch (e) {{
+            result = JSON.stringify({{__error: e.message, __stack: e.stack}});
+          }}
+          lastResult = result;
+          setTimeout(poll, 0);
+        }} else {{
+          setTimeout(poll, 30);
+        }}
+      }};
+      xhr.onerror = function() {{ setTimeout(poll, 100); }};
+      xhr.send();
+    }}
+    poll();
+  }})();
+"#
+        );
+        script.push_str(&bridge_snippet);
+    }
+
+    script.push_str(
+        r#"
   loadScript('asset://localhost/assets/vendor/react.production.min.js')
     .then(function() {
       return loadScript('asset://localhost/assets/vendor/react-dom.production.min.js');
     })
     .then(function() {
       return loadScript('asset://localhost/assets/app.js');
-    })"#);
+    })"#,
+    );
 
-    if let Some(port) = http_bridge_port {
-        let poll_snippet = format!(r#"
-    .then(function() {{
-      console.log('[test-bridge] polling script starting on port {port}');
-      var lastResult = null;
-      function poll() {{
-        var url = 'http://127.0.0.1:{port}/poll' + (lastResult !== null ? '?result=' + encodeURIComponent(lastResult) : '');
-        lastResult = null;
-        var xhr = new XMLHttpRequest();
-        xhr.open('GET', url, true);
-        xhr.onload = function() {{
-          var data;
-          try {{ data = JSON.parse(xhr.responseText); }} catch(e) {{ data = {{}}; }}
-          if (data.cmd) {{
-            var result;
-            try {{
-              var value = (0, eval)(data.cmd);
-              result = JSON.stringify(value);
-              if (typeof result === 'undefined') {{
-                result = 'null';
-              }}
-            }} catch (e) {{
-              result = JSON.stringify({{__error: e.message, __stack: e.stack}});
-            }}
-            lastResult = result;
-            setTimeout(poll, 0);
-          }} else {{
-            setTimeout(poll, 30);
-          }}
-        }};
-        xhr.onerror = function() {{ setTimeout(poll, 100); }};
-        xhr.send();
-      }}
-      poll();
-    }})"#);
-        script.push_str(&poll_snippet);
-    }
-
-    script.push_str(r#"
+    script.push_str(
+        r#"
     .catch(function(err) {
+      if (window.__testBridgeLogs) {
+        window.__testBridgeLogs.push({
+          type: 'error',
+          message: 'bootstrap failure: ' + err.message,
+          timestamp: Date.now()
+        });
+      }
+      console.error('[bootstrap]', err);
       document.getElementById('root').textContent =
         'Failed to load app: ' + err.message;
     })
-})();"#);
+})();"#,
+    );
 
     js_sys::eval(&script).unwrap();
-}
-
-fn native_get_system_info() -> String {
-    serde_json::json!({
-        "os": std::env::consts::OS,
-        "arch": std::env::consts::ARCH,
-        "family": std::env::consts::FAMILY,
-        "exe": std::env::current_exe()
-            .map(|p| p.display().to_string())
-            .unwrap_or_default(),
-        "cwd": std::env::current_dir()
-            .map(|p| p.display().to_string())
-            .unwrap_or_default(),
-    })
-    .to_string()
-}
-
-fn native_fibonacci(n: f64) -> f64 {
-    let n = n as u64;
-    let result = if n <= 1 {
-        n
-    } else {
-        let (mut a, mut b) = (0u64, 1u64);
-        for _ in 2..=n {
-            let c = a.wrapping_add(b);
-            a = b;
-            b = c;
-        }
-        b
-    };
-    result as f64
-}
-
-fn native_read_dir(path: String) -> String {
-    match std::fs::read_dir(&path) {
-        Ok(entries) => {
-            let mut items: Vec<serde_json::Value> = entries
-                .filter_map(|e| e.ok())
-                .map(|e| {
-                    let meta = e.metadata().ok();
-                    serde_json::json!({
-                        "name": e.file_name().to_string_lossy(),
-                        "isDir": meta.as_ref().map(|m| m.is_dir()).unwrap_or(false),
-                        "size": meta.as_ref().map(|m| m.len()).unwrap_or(0),
-                    })
-                })
-                .collect();
-            items.sort_by(|a, b| {
-                let a_dir = a["isDir"].as_bool().unwrap_or(false);
-                let b_dir = b["isDir"].as_bool().unwrap_or(false);
-                b_dir.cmp(&a_dir).then_with(|| {
-                    a["name"]
-                        .as_str()
-                        .unwrap_or("")
-                        .cmp(b["name"].as_str().unwrap_or(""))
-                })
-            });
-            serde_json::json!({ "entries": items }).to_string()
-        }
-        Err(e) => serde_json::json!({ "error": e.to_string() }).to_string(),
-    }
-}
-
-fn native_read_file(path: String) -> String {
-    match std::fs::read_to_string(&path) {
-        Ok(content) => {
-            let truncated = content.len() > 10_000;
-            let display = if truncated {
-                &content[..10_000]
-            } else {
-                &content
-            };
-            serde_json::json!({
-                "content": display,
-                "truncated": truncated,
-                "totalBytes": content.len(),
-            })
-            .to_string()
-        }
-        Err(e) => serde_json::json!({ "error": e.to_string() }).to_string(),
-    }
-}
-
-fn native_write_file(path: String, content: String) -> String {
-    match std::fs::write(&path, &content) {
-        Ok(()) => serde_json::json!({ "ok": true }).to_string(),
-        Err(e) => serde_json::json!({ "error": e.to_string() }).to_string(),
-    }
-}
-
-fn native_get_env(key: String) -> JsValue {
-    match std::env::var(&key) {
-        Ok(val) => JsValue::from_str(&val),
-        Err(_) => JsValue::NULL,
-    }
 }
