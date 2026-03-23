@@ -306,13 +306,274 @@ function Counter() {
 }
 
 // ---------------------------------------------------------------------------
+// Automation Lab — interactive controls used by the Playwright proxy tests
+// ---------------------------------------------------------------------------
+
+function AutomationLab() {
+  const [text, setText] = useState("");
+  const [checked, setChecked] = useState(false);
+  const [selected, setSelected] = useState("blue");
+  const [selectedMany, setSelectedMany] = useState<string[]>(["beta"]);
+  const [hovered, setHovered] = useState(false);
+  const [doubleClicks, setDoubleClicks] = useState(0);
+  const [keyLog, setKeyLog] = useState<string[]>([]);
+  const [submitted, setSubmitted] = useState(0);
+  const [asyncVisible, setAsyncVisible] = useState(false);
+  const [customMessage, setCustomMessage] = useState("idle");
+  const [editableText, setEditableText] = useState("Editable content");
+  const dispatchTargetRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const target = dispatchTargetRef.current;
+    if (!target) return;
+
+    const listener = (event: Event) => {
+      const custom = event as CustomEvent<{ message?: string }>;
+      setCustomMessage(custom.detail?.message || event.type);
+    };
+
+    target.addEventListener("lab:update", listener as EventListener);
+    return () =>
+      target.removeEventListener("lab:update", listener as EventListener);
+  }, []);
+
+  return (
+    <div className="card automation-card" id="automation-lab">
+      <h2>Automation Lab</h2>
+      <p className="subtitle">
+        Controls and event targets used to validate the embedded Playwright
+        proxy.
+      </p>
+
+      <div className="lab-grid">
+        <section className="lab-panel" id="lab-form-panel">
+          <h3>Form Controls</h3>
+          <div className="row">
+            <label className="lab-label" htmlFor="lab-text">
+              Text Input
+            </label>
+            <input
+              id="lab-text"
+              className="lab-input"
+              data-kind="text"
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              onKeyDown={(e) => {
+                setKeyLog((log) => [...log.slice(-7), e.key]);
+                if (e.key === "Enter") setSubmitted((count) => count + 1);
+              }}
+            />
+          </div>
+
+          <div className="row">
+            <label className="lab-label" htmlFor="lab-checkbox">
+              Checkbox
+            </label>
+            <input
+              id="lab-checkbox"
+              type="checkbox"
+              checked={checked}
+              onChange={(e) => setChecked(e.target.checked)}
+            />
+          </div>
+
+          <div className="row">
+            <label className="lab-label" htmlFor="lab-select">
+              Single Select
+            </label>
+            <select
+              id="lab-select"
+              className="lab-input"
+              value={selected}
+              onChange={(e) => setSelected(e.target.value)}
+            >
+              <option value="blue">Blue</option>
+              <option value="green">Green</option>
+              <option value="orange">Orange</option>
+            </select>
+          </div>
+
+          <div className="row">
+            <label className="lab-label" htmlFor="lab-multi-select">
+              Multi Select
+            </label>
+            <select
+              id="lab-multi-select"
+              className="lab-input"
+              multiple
+              value={selectedMany}
+              onChange={(e) =>
+                setSelectedMany(
+                  Array.from(e.target.selectedOptions).map((option) => option.value)
+                )
+              }
+            >
+              <option value="alpha">Alpha</option>
+              <option value="beta">Beta</option>
+              <option value="gamma">Gamma</option>
+            </select>
+          </div>
+
+          <div className="lab-output-list">
+            <p id="lab-text-output" className="lab-output">
+              {text || "empty"}
+            </p>
+            <p id="lab-keylog" className="lab-output">
+              {keyLog.join(",") || "empty"}
+            </p>
+            <p id="lab-submit-count" className="lab-output">
+              {String(submitted)}
+            </p>
+            <p id="lab-checkbox-output" className="lab-output">
+              {checked ? "checked" : "unchecked"}
+            </p>
+            <p id="lab-select-output" className="lab-output">
+              {selected}
+            </p>
+            <p id="lab-multi-select-output" className="lab-output">
+              {selectedMany.join(",") || "none"}
+            </p>
+          </div>
+        </section>
+
+        <section className="lab-panel" id="lab-state-panel">
+          <h3>State and Visibility</h3>
+          <div className="row">
+            <button
+              id="lab-reveal"
+              className="btn btn-sm"
+              onClick={() => {
+                setAsyncVisible(false);
+                window.setTimeout(() => setAsyncVisible(true), 120);
+              }}
+            >
+              Reveal Async Note
+            </button>
+            <input
+              id="lab-readonly"
+              className="lab-input"
+              readOnly
+              value="read-only value"
+            />
+            <input
+              id="lab-disabled"
+              className="lab-input"
+              disabled
+              value="disabled value"
+              onChange={() => {}}
+            />
+          </div>
+
+          <div
+            id="lab-editable"
+            className="lab-editable"
+            contentEditable
+            suppressContentEditableWarning
+            onInput={(e) =>
+              setEditableText(
+                (e.currentTarget.textContent || "").trim() || "Editable content"
+              )
+            }
+          >
+            {editableText}
+          </div>
+
+          <p
+            id="lab-async-note"
+            className={"lab-note" + (asyncVisible ? "" : " lab-note-hidden")}
+            hidden={!asyncVisible}
+          >
+            Ready for waitForSelector
+          </p>
+
+          <p id="lab-editable-output" className="lab-output">
+            {editableText}
+          </p>
+        </section>
+
+        <section className="lab-panel" id="lab-events-panel">
+          <h3>Events</h3>
+          <div
+            id="lab-hover-target"
+            className={"lab-event-box" + (hovered ? " lab-event-active" : "")}
+            onMouseEnter={() => setHovered(true)}
+            onMouseLeave={() => setHovered(false)}
+          >
+            Hover target
+          </div>
+
+          <button
+            id="lab-double-target"
+            className="btn btn-sm"
+            onDoubleClick={() => setDoubleClicks((count) => count + 1)}
+          >
+            Double-click target
+          </button>
+
+          <div
+            id="lab-dispatch-target"
+            ref={dispatchTargetRef}
+            className="lab-event-box"
+            data-status={customMessage}
+          >
+            Dispatch target
+          </div>
+
+          <div className="lab-output-list">
+            <p id="lab-hover-output" className="lab-output">
+              {hovered ? "hovered" : "idle"}
+            </p>
+            <p id="lab-double-count" className="lab-output">
+              {String(doubleClicks)}
+            </p>
+            <p id="lab-dispatch-output" className="lab-output">
+              {customMessage}
+            </p>
+          </div>
+        </section>
+
+        <section className="lab-panel" id="lab-handle-panel">
+          <h3>Handle Scope</h3>
+          <div id="lab-scope" data-scope="root">
+            <p id="lab-scope-label" data-role="scope-label">
+              Scoped query root
+            </p>
+            <ul id="lab-list" className="lab-list">
+              <li className="lab-list-item" data-item="one">
+                One
+              </li>
+              <li className="lab-list-item" data-item="two">
+                Two
+              </li>
+              <li className="lab-list-item" data-item="three">
+                Three
+              </li>
+            </ul>
+          </div>
+        </section>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // App shell
 // ---------------------------------------------------------------------------
 
-const TAB_NAMES = ["System Info", "Fibonacci", "File Explorer", "Counter"];
+const TAB_NAMES = [
+  "System Info",
+  "Fibonacci",
+  "File Explorer",
+  "Counter",
+  "Automation Lab",
+];
 
 function App() {
   const [tab, setTab] = useState(TAB_NAMES[0]);
+
+  useEffect(() => {
+    document.title = "dioxus-react";
+  }, []);
 
   let content: React.ReactNode;
   switch (tab) {
@@ -327,6 +588,9 @@ function App() {
       break;
     case "Counter":
       content = <Counter />;
+      break;
+    case "Automation Lab":
+      content = <AutomationLab />;
       break;
   }
 

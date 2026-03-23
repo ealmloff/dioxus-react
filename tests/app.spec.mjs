@@ -27,16 +27,6 @@ async function clickTab(name) {
   }, name);
 }
 
-async function clickFileEntry(name) {
-  await currentPage().evaluate((fileName) => {
-    const entry = Array.from(document.querySelectorAll(".file-entry")).find(
-      (element) => element.querySelector(".file-name")?.textContent === fileName
-    );
-    if (!entry) throw new Error(`No file entry matches ${fileName}`);
-    entry.click();
-  }, name);
-}
-
 test.beforeAll(async () => {
   proxy = new PlaywrightWryProxy();
   const wsEndpoint = await proxy.start();
@@ -55,8 +45,10 @@ test.afterAll(async () => {
 
 test("connects to the real embedded WRY page", async () => {
   expect(currentPage().url()).toContain("wry://");
-  await expect.poll(() => currentPage().evaluate(() => document.querySelectorAll(".tab").length)).toBe(4);
+  await expect.poll(() => currentPage().title()).toBe("dioxus-react");
+  await expect.poll(() => currentPage().evaluate(() => document.querySelectorAll(".tab").length)).toBe(5);
   await expect.poll(() => currentPage().textContent("h1")).toBe("dioxus-react");
+  await expect.poll(() => currentPage().content()).toContain("wasm-bindgen-wry");
 });
 
 test("reads native system information through the proxy", async () => {
@@ -68,35 +60,149 @@ test("reads native system information through the proxy", async () => {
   expect(tableText).toMatch(/macos|linux|windows/);
 });
 
-test("runs native fibonacci via Playwright page actions", async () => {
+test("runs native fibonacci and browses the real filesystem", async () => {
   await clickTab("Fibonacci");
   await expect.poll(() => currentPage().textContent("h2")).toBe("Native Fibonacci");
   await currentPage().fill('input[type="number"]', "7");
   await expect.poll(() => currentPage().inputValue('input[type="number"]')).toBe("7");
   await currentPage().click(".btn");
   await expect.poll(() => currentPage().textContent(".result-value")).toBe("13");
-});
 
-test("browses the real filesystem", async () => {
   await clickTab("File Explorer");
   await expect.poll(() => currentPage().textContent("h2")).toBe("File Explorer");
   await expect.poll(() => currentPage().evaluate(() => document.querySelectorAll(".file-entry").length)).toBeGreaterThan(0);
   await expect.poll(() => currentPage().inputValue(".path-input")).toContain("dioxus-react");
-  await clickFileEntry("Cargo.toml");
+  await currentPage().evaluate(() => {
+    const entry = Array.from(document.querySelectorAll(".file-entry")).find(
+      (element) => element.querySelector(".file-name")?.textContent === "Cargo.toml"
+    );
+    if (!entry) throw new Error("Cargo.toml not found");
+    entry.click();
+  });
   await expect.poll(() => currentPage().textContent(".file-preview h3")).toBe("Cargo.toml");
   await expect.poll(() => currentPage().textContent(".file-preview pre")).toContain("[package]");
 });
 
-test("switches tabs and preserves React interactivity", async () => {
-  await clickTab("Counter");
-  await expect.poll(() => currentPage().textContent(".counter-value")).toBe("0");
-  await currentPage().click(".counter-row .btn:last-child");
-  await currentPage().click(".counter-row .btn:last-child");
-  await currentPage().click(".counter-row .btn:first-child");
-  await expect.poll(() => currentPage().textContent(".counter-value")).toBe("1");
+test("supports frame-level form and state methods", async () => {
+  await clickTab("Automation Lab");
+  await expect.poll(() => currentPage().textContent("h2")).toBe("Automation Lab");
 
-  await clickTab("System Info");
+  expect(await currentPage().isEditable("#lab-text")).toBe(true);
+  expect(await currentPage().isEditable("#lab-readonly")).toBe(false);
+  expect(await currentPage().isDisabled("#lab-disabled")).toBe(true);
+  expect(await currentPage().isHidden("#lab-async-note")).toBe(true);
+
+  await currentPage().focus("#lab-text");
+  await currentPage().type("#lab-text", "proxy");
+  await expect.poll(() => currentPage().textContent("#lab-text-output")).toBe("proxy");
+  await expect.poll(() => currentPage().textContent("#lab-keylog")).toContain("p");
+
+  await currentPage().press("#lab-text", "Enter");
+  await expect.poll(() => currentPage().textContent("#lab-submit-count")).toBe("1");
+
+  await currentPage().check("#lab-checkbox");
+  expect(await currentPage().isChecked("#lab-checkbox")).toBe(true);
+  await expect.poll(() => currentPage().textContent("#lab-checkbox-output")).toBe("checked");
+
+  await currentPage().uncheck("#lab-checkbox");
+  expect(await currentPage().isChecked("#lab-checkbox")).toBe(false);
+  await expect.poll(() => currentPage().textContent("#lab-checkbox-output")).toBe("unchecked");
+
+  await currentPage().selectOption("#lab-select", { label: "Green" });
+  await expect.poll(() => currentPage().textContent("#lab-select-output")).toBe("green");
+
+  const multiValues = await currentPage().selectOption("#lab-multi-select", [
+    "alpha",
+    "gamma",
+  ]);
+  expect(multiValues).toEqual(["alpha", "gamma"]);
+  await expect.poll(() => currentPage().textContent("#lab-multi-select-output")).toBe("alpha,gamma");
+});
+
+test("supports waiters and event dispatch", async () => {
+  await clickTab("Automation Lab");
+
+  await currentPage().click("#lab-reveal");
+  const note = await currentPage().waitForSelector("#lab-async-note");
+  expect(note).toBeTruthy();
+  expect(await currentPage().isVisible("#lab-async-note")).toBe(true);
+  await expect.poll(() => currentPage().textContent("#lab-async-note")).toBe("Ready for waitForSelector");
+
+  await currentPage().hover("#lab-hover-target");
+  await expect.poll(() => currentPage().textContent("#lab-hover-output")).toBe("hovered");
+
+  await currentPage().dblclick("#lab-double-target");
+  await expect.poll(() => currentPage().textContent("#lab-double-count")).toBe("1");
+
+  await currentPage().dispatchEvent("#lab-dispatch-target", "lab:update", {
+    detail: { message: "manual-dispatch" },
+  });
+  await expect.poll(() => currentPage().textContent("#lab-dispatch-output")).toBe("manual-dispatch");
+});
+
+test("supports handles, scoped queries, and handle arguments", async () => {
+  await clickTab("Automation Lab");
+
+  const scope = await currentPage().$("#lab-scope");
+  expect(scope).toBeTruthy();
+  expect(await scope.getAttribute("data-scope")).toBe("root");
+
+  const scopedLabel = await scope.waitForSelector("#lab-scope-label");
+  expect(scopedLabel).toBeTruthy();
+  expect(await scopedLabel.textContent()).toBe("Scoped query root");
+  expect(await scopedLabel.getAttribute("data-role")).toBe("scope-label");
+
+  const items = await scope.$$(".lab-list-item");
+  expect(items).toHaveLength(3);
+  expect(await items[1].textContent()).toBe("Two");
+
+  const count = await scope.$$eval(".lab-list-item", (nodes) => nodes.length);
+  expect(count).toBe(3);
+  expect(await scope.$eval("#lab-list", (node) => node.children.length)).toBe(3);
+
+  const handle = await currentPage().evaluateHandle(() => ({
+    ready: false,
+    nested: { value: 7 },
+  }));
+  const nested = await handle.getProperty("nested");
+  expect(await nested.jsonValue()).toEqual({ value: 7 });
+
+  const properties = await handle.getProperties();
+  expect(await properties.get("ready").jsonValue()).toBe(false);
+
+  const checkbox = await currentPage().$("#lab-checkbox");
+  expect(checkbox).toBeTruthy();
+
+  await currentPage().evaluate((element) => {
+    window.setTimeout(() => {
+      element.checked = true;
+      element.dispatchEvent(new Event("change", { bubbles: true }));
+    }, 120);
+  }, checkbox);
+
+  const checkedHandle = await currentPage().waitForFunction(
+    (element) => element.checked,
+    checkbox
+  );
+  expect(await checkedHandle.jsonValue()).toBe(true);
+  expect(await currentPage().isChecked("#lab-checkbox")).toBe(true);
+
+  const windowHandle = await currentPage().waitForFunction(() => window);
+  expect(await windowHandle.evaluate((win) => win.location.protocol)).toBe("wry:");
+});
+
+test("survives a real page reload", async () => {
+  await clickTab("Automation Lab");
+  await currentPage().fill("#lab-text", "before reload");
+  await expect.poll(() => currentPage().textContent("#lab-text-output")).toBe("before reload");
+
+  await currentPage().reload();
+
+  await expect.poll(() => currentPage().title()).toBe("dioxus-react");
+  await expect.poll(() => currentPage().textContent("h1")).toBe("dioxus-react");
   await expect.poll(() => currentPage().textContent("h2")).toBe("System Information");
-  await clickTab("Counter");
-  await expect.poll(() => currentPage().textContent(".counter-value")).toBe("0");
+
+  await clickTab("Automation Lab");
+  await expect.poll(() => currentPage().inputValue("#lab-text")).toBe("");
+  await expect.poll(() => currentPage().textContent("#lab-checkbox-output")).toBe("unchecked");
 });

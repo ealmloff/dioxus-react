@@ -181,9 +181,165 @@
     const [count, setCount] = (0, import_react.useState)(0);
     return /* @__PURE__ */ import_react.default.createElement("div", { className: "card" }, /* @__PURE__ */ import_react.default.createElement("h2", null, "Counter"), /* @__PURE__ */ import_react.default.createElement("p", { className: "subtitle" }, "Pure React state \u2014 no native calls."), /* @__PURE__ */ import_react.default.createElement("div", { className: "counter-row" }, /* @__PURE__ */ import_react.default.createElement("button", { className: "btn", onClick: () => setCount(count - 1) }, "\u2212"), /* @__PURE__ */ import_react.default.createElement("span", { className: "counter-value" }, count), /* @__PURE__ */ import_react.default.createElement("button", { className: "btn", onClick: () => setCount(count + 1) }, "+")));
   }
-  var TAB_NAMES = ["System Info", "Fibonacci", "File Explorer", "Counter"];
+  function AutomationLab() {
+    const [text, setText] = (0, import_react.useState)("");
+    const [checked, setChecked] = (0, import_react.useState)(false);
+    const [selected, setSelected] = (0, import_react.useState)("blue");
+    const [selectedMany, setSelectedMany] = (0, import_react.useState)(["beta"]);
+    const [hovered, setHovered] = (0, import_react.useState)(false);
+    const [doubleClicks, setDoubleClicks] = (0, import_react.useState)(0);
+    const [keyLog, setKeyLog] = (0, import_react.useState)([]);
+    const [submitted, setSubmitted] = (0, import_react.useState)(0);
+    const [asyncVisible, setAsyncVisible] = (0, import_react.useState)(false);
+    const [customMessage, setCustomMessage] = (0, import_react.useState)("idle");
+    const [editableText, setEditableText] = (0, import_react.useState)("Editable content");
+    const dispatchTargetRef = (0, import_react.useRef)(null);
+    (0, import_react.useEffect)(() => {
+      const target = dispatchTargetRef.current;
+      if (!target) return;
+      const listener = (event) => {
+        var _a;
+        const custom = event;
+        setCustomMessage(((_a = custom.detail) == null ? void 0 : _a.message) || event.type);
+      };
+      target.addEventListener("lab:update", listener);
+      return () => target.removeEventListener("lab:update", listener);
+    }, []);
+    return /* @__PURE__ */ import_react.default.createElement("div", { className: "card automation-card", id: "automation-lab" }, /* @__PURE__ */ import_react.default.createElement("h2", null, "Automation Lab"), /* @__PURE__ */ import_react.default.createElement("p", { className: "subtitle" }, "Controls and event targets used to validate the embedded Playwright proxy."), /* @__PURE__ */ import_react.default.createElement("div", { className: "lab-grid" }, /* @__PURE__ */ import_react.default.createElement("section", { className: "lab-panel", id: "lab-form-panel" }, /* @__PURE__ */ import_react.default.createElement("h3", null, "Form Controls"), /* @__PURE__ */ import_react.default.createElement("div", { className: "row" }, /* @__PURE__ */ import_react.default.createElement("label", { className: "lab-label", htmlFor: "lab-text" }, "Text Input"), /* @__PURE__ */ import_react.default.createElement(
+      "input",
+      {
+        id: "lab-text",
+        className: "lab-input",
+        "data-kind": "text",
+        value: text,
+        onChange: (e) => setText(e.target.value),
+        onKeyDown: (e) => {
+          setKeyLog((log) => [...log.slice(-7), e.key]);
+          if (e.key === "Enter") setSubmitted((count) => count + 1);
+        }
+      }
+    )), /* @__PURE__ */ import_react.default.createElement("div", { className: "row" }, /* @__PURE__ */ import_react.default.createElement("label", { className: "lab-label", htmlFor: "lab-checkbox" }, "Checkbox"), /* @__PURE__ */ import_react.default.createElement(
+      "input",
+      {
+        id: "lab-checkbox",
+        type: "checkbox",
+        checked,
+        onChange: (e) => setChecked(e.target.checked)
+      }
+    )), /* @__PURE__ */ import_react.default.createElement("div", { className: "row" }, /* @__PURE__ */ import_react.default.createElement("label", { className: "lab-label", htmlFor: "lab-select" }, "Single Select"), /* @__PURE__ */ import_react.default.createElement(
+      "select",
+      {
+        id: "lab-select",
+        className: "lab-input",
+        value: selected,
+        onChange: (e) => setSelected(e.target.value)
+      },
+      /* @__PURE__ */ import_react.default.createElement("option", { value: "blue" }, "Blue"),
+      /* @__PURE__ */ import_react.default.createElement("option", { value: "green" }, "Green"),
+      /* @__PURE__ */ import_react.default.createElement("option", { value: "orange" }, "Orange")
+    )), /* @__PURE__ */ import_react.default.createElement("div", { className: "row" }, /* @__PURE__ */ import_react.default.createElement("label", { className: "lab-label", htmlFor: "lab-multi-select" }, "Multi Select"), /* @__PURE__ */ import_react.default.createElement(
+      "select",
+      {
+        id: "lab-multi-select",
+        className: "lab-input",
+        multiple: true,
+        value: selectedMany,
+        onChange: (e) => setSelectedMany(
+          Array.from(e.target.selectedOptions).map((option) => option.value)
+        )
+      },
+      /* @__PURE__ */ import_react.default.createElement("option", { value: "alpha" }, "Alpha"),
+      /* @__PURE__ */ import_react.default.createElement("option", { value: "beta" }, "Beta"),
+      /* @__PURE__ */ import_react.default.createElement("option", { value: "gamma" }, "Gamma")
+    )), /* @__PURE__ */ import_react.default.createElement("div", { className: "lab-output-list" }, /* @__PURE__ */ import_react.default.createElement("p", { id: "lab-text-output", className: "lab-output" }, text || "empty"), /* @__PURE__ */ import_react.default.createElement("p", { id: "lab-keylog", className: "lab-output" }, keyLog.join(",") || "empty"), /* @__PURE__ */ import_react.default.createElement("p", { id: "lab-submit-count", className: "lab-output" }, String(submitted)), /* @__PURE__ */ import_react.default.createElement("p", { id: "lab-checkbox-output", className: "lab-output" }, checked ? "checked" : "unchecked"), /* @__PURE__ */ import_react.default.createElement("p", { id: "lab-select-output", className: "lab-output" }, selected), /* @__PURE__ */ import_react.default.createElement("p", { id: "lab-multi-select-output", className: "lab-output" }, selectedMany.join(",") || "none"))), /* @__PURE__ */ import_react.default.createElement("section", { className: "lab-panel", id: "lab-state-panel" }, /* @__PURE__ */ import_react.default.createElement("h3", null, "State and Visibility"), /* @__PURE__ */ import_react.default.createElement("div", { className: "row" }, /* @__PURE__ */ import_react.default.createElement(
+      "button",
+      {
+        id: "lab-reveal",
+        className: "btn btn-sm",
+        onClick: () => {
+          setAsyncVisible(false);
+          window.setTimeout(() => setAsyncVisible(true), 120);
+        }
+      },
+      "Reveal Async Note"
+    ), /* @__PURE__ */ import_react.default.createElement(
+      "input",
+      {
+        id: "lab-readonly",
+        className: "lab-input",
+        readOnly: true,
+        value: "read-only value"
+      }
+    ), /* @__PURE__ */ import_react.default.createElement(
+      "input",
+      {
+        id: "lab-disabled",
+        className: "lab-input",
+        disabled: true,
+        value: "disabled value",
+        onChange: () => {
+        }
+      }
+    )), /* @__PURE__ */ import_react.default.createElement(
+      "div",
+      {
+        id: "lab-editable",
+        className: "lab-editable",
+        contentEditable: true,
+        suppressContentEditableWarning: true,
+        onInput: (e) => setEditableText(
+          (e.currentTarget.textContent || "").trim() || "Editable content"
+        )
+      },
+      editableText
+    ), /* @__PURE__ */ import_react.default.createElement(
+      "p",
+      {
+        id: "lab-async-note",
+        className: "lab-note" + (asyncVisible ? "" : " lab-note-hidden"),
+        hidden: !asyncVisible
+      },
+      "Ready for waitForSelector"
+    ), /* @__PURE__ */ import_react.default.createElement("p", { id: "lab-editable-output", className: "lab-output" }, editableText)), /* @__PURE__ */ import_react.default.createElement("section", { className: "lab-panel", id: "lab-events-panel" }, /* @__PURE__ */ import_react.default.createElement("h3", null, "Events"), /* @__PURE__ */ import_react.default.createElement(
+      "div",
+      {
+        id: "lab-hover-target",
+        className: "lab-event-box" + (hovered ? " lab-event-active" : ""),
+        onMouseEnter: () => setHovered(true),
+        onMouseLeave: () => setHovered(false)
+      },
+      "Hover target"
+    ), /* @__PURE__ */ import_react.default.createElement(
+      "button",
+      {
+        id: "lab-double-target",
+        className: "btn btn-sm",
+        onDoubleClick: () => setDoubleClicks((count) => count + 1)
+      },
+      "Double-click target"
+    ), /* @__PURE__ */ import_react.default.createElement(
+      "div",
+      {
+        id: "lab-dispatch-target",
+        ref: dispatchTargetRef,
+        className: "lab-event-box",
+        "data-status": customMessage
+      },
+      "Dispatch target"
+    ), /* @__PURE__ */ import_react.default.createElement("div", { className: "lab-output-list" }, /* @__PURE__ */ import_react.default.createElement("p", { id: "lab-hover-output", className: "lab-output" }, hovered ? "hovered" : "idle"), /* @__PURE__ */ import_react.default.createElement("p", { id: "lab-double-count", className: "lab-output" }, String(doubleClicks)), /* @__PURE__ */ import_react.default.createElement("p", { id: "lab-dispatch-output", className: "lab-output" }, customMessage))), /* @__PURE__ */ import_react.default.createElement("section", { className: "lab-panel", id: "lab-handle-panel" }, /* @__PURE__ */ import_react.default.createElement("h3", null, "Handle Scope"), /* @__PURE__ */ import_react.default.createElement("div", { id: "lab-scope", "data-scope": "root" }, /* @__PURE__ */ import_react.default.createElement("p", { id: "lab-scope-label", "data-role": "scope-label" }, "Scoped query root"), /* @__PURE__ */ import_react.default.createElement("ul", { id: "lab-list", className: "lab-list" }, /* @__PURE__ */ import_react.default.createElement("li", { className: "lab-list-item", "data-item": "one" }, "One"), /* @__PURE__ */ import_react.default.createElement("li", { className: "lab-list-item", "data-item": "two" }, "Two"), /* @__PURE__ */ import_react.default.createElement("li", { className: "lab-list-item", "data-item": "three" }, "Three"))))));
+  }
+  var TAB_NAMES = [
+    "System Info",
+    "Fibonacci",
+    "File Explorer",
+    "Counter",
+    "Automation Lab"
+  ];
   function App() {
     const [tab, setTab] = (0, import_react.useState)(TAB_NAMES[0]);
+    (0, import_react.useEffect)(() => {
+      document.title = "dioxus-react";
+    }, []);
     let content;
     switch (tab) {
       case "System Info":
@@ -197,6 +353,9 @@
         break;
       case "Counter":
         content = /* @__PURE__ */ import_react.default.createElement(Counter, null);
+        break;
+      case "Automation Lab":
+        content = /* @__PURE__ */ import_react.default.createElement(AutomationLab, null);
         break;
     }
     return /* @__PURE__ */ import_react.default.createElement("div", { className: "app" }, /* @__PURE__ */ import_react.default.createElement("header", { className: "header" }, /* @__PURE__ */ import_react.default.createElement("h1", null, "dioxus-react"), /* @__PURE__ */ import_react.default.createElement("p", null, "React UI ", "\xB7", " Native Rust ", "\xB7", " Powered by", " ", /* @__PURE__ */ import_react.default.createElement(

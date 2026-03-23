@@ -263,6 +263,106 @@ input[type="number"] {
   margin-bottom: 8px;
 }
 
+.automation-card {
+  min-height: 520px;
+}
+
+.lab-grid {
+  display: grid;
+  gap: 16px;
+}
+
+.lab-panel {
+  background: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  padding: 14px;
+}
+
+.lab-panel h3 {
+  font-size: 15px;
+  color: #f8fafc;
+  margin-bottom: 10px;
+}
+
+.lab-label {
+  width: 110px;
+  color: #94a3b8;
+  font-size: 13px;
+}
+
+.lab-input {
+  background: #020617;
+  border: 1px solid #334155;
+  color: #e2e8f0;
+  padding: 7px 12px;
+  border-radius: 6px;
+  font-size: 14px;
+  min-width: 170px;
+}
+
+.lab-output-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.lab-output {
+  background: #1e293b;
+  color: #cbd5e1;
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-family: "SF Mono", "Fira Code", monospace;
+}
+
+.lab-editable {
+  background: #020617;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  min-height: 52px;
+  padding: 10px 12px;
+  color: #e2e8f0;
+  margin-bottom: 10px;
+}
+
+.lab-note {
+  color: #34d399;
+  font-size: 13px;
+}
+
+.lab-note-hidden {
+  color: #64748b;
+}
+
+.lab-event-box {
+  background: #111827;
+  border: 1px dashed #475569;
+  border-radius: 8px;
+  padding: 14px;
+  color: #cbd5e1;
+  margin-bottom: 10px;
+}
+
+.lab-event-active {
+  border-color: #34d399;
+  color: #34d399;
+}
+
+.lab-list {
+  list-style: none;
+  display: grid;
+  gap: 6px;
+}
+
+.lab-list-item {
+  background: #1e293b;
+  border-radius: 6px;
+  padding: 8px 10px;
+  color: #e2e8f0;
+}
+
 /* Scrollbar */
 ::-webkit-scrollbar {
   width: 6px;
