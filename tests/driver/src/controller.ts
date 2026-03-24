@@ -492,9 +492,10 @@ export class ProxyAppController {
 
   async querySelector(
     selector: string,
-    rootHandleId: number | null
+    rootHandleId: number | null,
+    strict?: boolean
   ): Promise<HandleMeta | null> {
-    return await this.runtimeCall("querySelector", { selector, rootHandleId });
+    return await this.runtimeCall("querySelector", { selector, rootHandleId, strict: !!strict });
   }
 
   async querySelectorAll(
@@ -508,7 +509,8 @@ export class ProxyAppController {
     selector: string,
     rootHandleId: number | null,
     state?: string,
-    timeout?: number
+    timeout?: number,
+    strict?: boolean
   ): Promise<HandleMeta | null> {
     const deadline = timeout ? Date.now() + timeout : Date.now() + 30_000;
 
@@ -517,6 +519,7 @@ export class ProxyAppController {
         selector,
         rootHandleId,
         state,
+        strict: !!strict,
       });
 
       if (result) {
@@ -533,11 +536,13 @@ export class ProxyAppController {
     rootHandleId: number | null,
     expression: string,
     isFunction: boolean,
-    arg: SerializedArgument
+    arg: SerializedArgument,
+    strict?: boolean
   ): Promise<unknown> {
     return await this.runtimeCall("evalOnSelector", {
       selector,
       rootHandleId,
+      strict: !!strict,
       expression,
       isFunction,
       ...this.payloadFromArg(arg),
@@ -579,47 +584,73 @@ export class ProxyAppController {
   async textContent(
     selector: string | null,
     rootHandleId: number | null,
-    handleId: number | null
+    handleId: number | null,
+    strict?: boolean
   ): Promise<string | null> {
-    return await this.runtimeCall("textContent", { selector, rootHandleId, handleId });
+    return await this.runtimeCall("textContent", {
+      selector,
+      rootHandleId,
+      handleId,
+      strict: !!strict,
+    });
   }
 
   async innerText(
     selector: string | null,
     rootHandleId: number | null,
-    handleId: number | null
+    handleId: number | null,
+    strict?: boolean
   ): Promise<string> {
-    return await this.runtimeCall("innerText", { selector, rootHandleId, handleId });
+    return await this.runtimeCall("innerText", {
+      selector,
+      rootHandleId,
+      handleId,
+      strict: !!strict,
+    });
   }
 
   async innerHTML(
     selector: string | null,
     rootHandleId: number | null,
-    handleId: number | null
+    handleId: number | null,
+    strict?: boolean
   ): Promise<string> {
-    return await this.runtimeCall("innerHTML", { selector, rootHandleId, handleId });
+    return await this.runtimeCall("innerHTML", {
+      selector,
+      rootHandleId,
+      handleId,
+      strict: !!strict,
+    });
   }
 
   async getAttribute(
     selector: string | null,
     rootHandleId: number | null,
     handleId: number | null,
-    name: string
+    name: string,
+    strict?: boolean
   ): Promise<string | null> {
     return await this.runtimeCall("getAttribute", {
       selector,
       rootHandleId,
       handleId,
       name,
+      strict: !!strict,
     });
   }
 
   async inputValue(
     selector: string | null,
     rootHandleId: number | null,
-    handleId: number | null
+    handleId: number | null,
+    strict?: boolean
   ): Promise<string> {
-    return await this.runtimeCall("inputValue", { selector, rootHandleId, handleId });
+    return await this.runtimeCall("inputValue", {
+      selector,
+      rootHandleId,
+      handleId,
+      strict: !!strict,
+    });
   }
 
   async queryCount(selector: string, rootHandleId: number | null): Promise<number> {
@@ -628,6 +659,10 @@ export class ProxyAppController {
 
   async content(): Promise<string> {
     return await this.runtimeCall("content");
+  }
+
+  async setTestIdAttributeName(testIdAttributeName: string): Promise<void> {
+    await this.runtimeCall("setTestIdAttributeName", { testIdAttributeName });
   }
 
   async setContent(html: string): Promise<void> {
@@ -661,41 +696,46 @@ export class ProxyAppController {
   async focus(
     selector: string | null,
     rootHandleId: number | null,
-    handleId: number | null
+    handleId: number | null,
+    strict?: boolean
   ): Promise<void> {
-    await this.runtimeCall("focus", { selector, rootHandleId, handleId });
+    await this.runtimeCall("focus", { selector, rootHandleId, handleId, strict: !!strict });
   }
 
   async blur(
     selector: string | null,
     rootHandleId: number | null,
-    handleId: number | null
+    handleId: number | null,
+    strict?: boolean
   ): Promise<void> {
-    await this.runtimeCall("blur", { selector, rootHandleId, handleId });
+    await this.runtimeCall("blur", { selector, rootHandleId, handleId, strict: !!strict });
   }
 
   async click(
     selector: string | null,
     rootHandleId: number | null,
-    handleId: number | null
+    handleId: number | null,
+    strict?: boolean
   ): Promise<void> {
-    await this.runtimeCall("click", { selector, rootHandleId, handleId });
+    await this.runtimeCall("click", { selector, rootHandleId, handleId, strict: !!strict });
   }
 
   async dblclick(
     selector: string | null,
     rootHandleId: number | null,
-    handleId: number | null
+    handleId: number | null,
+    strict?: boolean
   ): Promise<void> {
-    await this.runtimeCall("dblclick", { selector, rootHandleId, handleId });
+    await this.runtimeCall("dblclick", { selector, rootHandleId, handleId, strict: !!strict });
   }
 
   async hover(
     selector: string | null,
     rootHandleId: number | null,
-    handleId: number | null
+    handleId: number | null,
+    strict?: boolean
   ): Promise<void> {
-    await this.runtimeCall("hover", { selector, rootHandleId, handleId });
+    await this.runtimeCall("hover", { selector, rootHandleId, handleId, strict: !!strict });
   }
 
   async dispatchEvent(
@@ -703,12 +743,14 @@ export class ProxyAppController {
     rootHandleId: number | null,
     handleId: number | null,
     type: string,
-    eventInit: SerializedArgument
+    eventInit: SerializedArgument,
+    strict?: boolean
   ): Promise<void> {
     await this.runtimeCall("dispatchEvent", {
       selector,
       rootHandleId,
       handleId,
+      strict: !!strict,
       type,
       eventInitValue: eventInit.value,
       handleIds: this.handleIds(eventInit.handles),
@@ -719,27 +761,30 @@ export class ProxyAppController {
     selector: string | null,
     rootHandleId: number | null,
     handleId: number | null,
-    value: string
+    value: string,
+    strict?: boolean
   ): Promise<void> {
-    await this.runtimeCall("fill", { selector, rootHandleId, handleId, value });
+    await this.runtimeCall("fill", { selector, rootHandleId, handleId, value, strict: !!strict });
   }
 
   async type(
     selector: string | null,
     rootHandleId: number | null,
     handleId: number | null,
-    text: string
+    text: string,
+    strict?: boolean
   ): Promise<void> {
-    await this.runtimeCall("type", { selector, rootHandleId, handleId, text });
+    await this.runtimeCall("type", { selector, rootHandleId, handleId, text, strict: !!strict });
   }
 
   async press(
     selector: string | null,
     rootHandleId: number | null,
     handleId: number | null,
-    key: string
+    key: string,
+    strict?: boolean
   ): Promise<void> {
-    await this.runtimeCall("press", { selector, rootHandleId, handleId, key });
+    await this.runtimeCall("press", { selector, rootHandleId, handleId, key, strict: !!strict });
   }
 
   async setChecked(
@@ -747,7 +792,8 @@ export class ProxyAppController {
     rootHandleId: number | null,
     handleId: number | null,
     checked: boolean,
-    trial?: boolean
+    trial?: boolean,
+    strict?: boolean
   ): Promise<boolean> {
     return await this.runtimeCall("check", {
       selector,
@@ -755,6 +801,7 @@ export class ProxyAppController {
       handleId,
       checked,
       trial: !!trial,
+      strict: !!strict,
     });
   }
 
@@ -763,7 +810,8 @@ export class ProxyAppController {
     rootHandleId: number | null,
     handleId: number | null,
     options: unknown[],
-    elements: Array<{ handleId: number }>
+    elements: Array<{ handleId: number }>,
+    strict?: boolean
   ): Promise<string[]> {
     return await this.runtimeCall("selectOption", {
       selector,
@@ -771,6 +819,7 @@ export class ProxyAppController {
       handleId,
       options,
       optionHandleIds: this.handleIds(elements),
+      strict: !!strict,
     });
   }
 
@@ -778,9 +827,15 @@ export class ProxyAppController {
     method: string,
     selector: string | null,
     rootHandleId: number | null,
-    handleId: number | null
+    handleId: number | null,
+    strict?: boolean
   ): Promise<boolean> {
-    return await this.runtimeCall(method, { selector, rootHandleId, handleId });
+    return await this.runtimeCall(method, {
+      selector,
+      rootHandleId,
+      handleId,
+      strict: !!strict,
+    });
   }
 
   async reload(): Promise<void> {

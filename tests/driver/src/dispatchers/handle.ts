@@ -170,7 +170,11 @@ export class ProxyHandleDispatcher extends Dispatcher {
   }
 
   async querySelector(params: any): Promise<{ element?: ProxyHandleDispatcher }> {
-    const meta = await this.controller.querySelector(params.selector, this.handleId);
+    const meta = await this.controller.querySelector(
+      params.selector,
+      this.handleId,
+      params.strict
+    );
     return {
       element: meta
         ? new ProxyHandleDispatcher(this.parentScope(), this.controller, meta)
@@ -195,7 +199,8 @@ export class ProxyHandleDispatcher extends Dispatcher {
           this.handleId,
           params.expression,
           params.isFunction,
-          params.arg
+          params.arg,
+          params.strict
         )
       ),
     };
@@ -220,7 +225,8 @@ export class ProxyHandleDispatcher extends Dispatcher {
       params.selector,
       this.handleId,
       params.state,
-      params.timeout
+      params.timeout,
+      params.strict
     );
     return {
       element: meta

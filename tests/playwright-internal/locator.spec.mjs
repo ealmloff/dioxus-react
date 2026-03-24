@@ -73,3 +73,76 @@ test("getByRole should work for common control roles", async ({ page }) => {
   expect(await page.getByRole("heading", { level: 2, name: "Actions" }).count()).toBe(1);
   expect(await page.getByRole("link", { name: "Help" }).getAttribute("href")).toBe("#help");
 });
+
+test("locator chaining with first, nth, and last should resolve through injected selectors", async ({
+  page,
+}) => {
+  await page.setContent(`
+    <main>
+      <ul aria-label="Inventory">
+        <li class="item">
+          <span class="name">Alpha</span>
+          <button>Open Alpha</button>
+        </li>
+        <li class="item">
+          <span class="name">Beta</span>
+          <button>Open Beta</button>
+        </li>
+        <li class="item">
+          <span class="name">Gamma</span>
+          <button>Open Gamma</button>
+        </li>
+      </ul>
+    </main>
+  `);
+
+  const items = page.getByRole("list").getByRole("listitem");
+  expect(await items.count()).toBe(3);
+  expect(await items.first().getByRole("button").textContent()).toBe("Open Alpha");
+  expect(await items.nth(1).getByRole("button").textContent()).toBe("Open Beta");
+  expect(await items.last().getByRole("button").textContent()).toBe("Open Gamma");
+});
+
+test("locator filter should support hasText and has", async ({ page }) => {
+  await page.setContent(`
+    <main>
+      <article class="card">
+        <h2>Alpha</h2>
+        <button>Select Alpha</button>
+      </article>
+      <article class="card">
+        <h2>Beta</h2>
+        <button>Select Beta</button>
+      </article>
+      <article class="card">
+        <h2>Gamma</h2>
+        <button>Select Gamma</button>
+      </article>
+    </main>
+  `);
+
+  const betaByText = page.locator(".card").filter({ hasText: "Beta" });
+  expect(await betaByText.count()).toBe(1);
+  expect(await betaByText.getByRole("heading").textContent()).toBe("Beta");
+
+  const betaByChild = page
+    .locator(".card")
+    .filter({ has: page.getByRole("button", { name: "Select Beta" }) });
+  expect(await betaByChild.count()).toBe(1);
+  expect(await betaByChild.getByRole("button").textContent()).toBe("Select Beta");
+});
+
+test("strict locator actions should raise Playwright strict mode errors", async ({ page }) => {
+  await page.setContent(`
+    <main>
+      <button>Duplicate</button>
+      <button>Duplicate</button>
+    </main>
+  `);
+
+  const error = await page
+    .getByRole("button", { name: "Duplicate" })
+    .click()
+    .catch((value) => value);
+  expect(String(error)).toContain("strict mode violation");
+});

@@ -6,5 +6,7 @@ export default defineConfig({
   timeout: 30_000,
   retries: 0,
   fullyParallel: true,
-  workers: 32,
+  // Real WRY app sessions are process-heavy; oversubscribing workers makes
+  // the embedded-app suite flaky on local machines.
+  workers: 8,
 });

@@ -52,7 +52,9 @@ export class ProxyBrowserContextDispatcher extends Dispatcher {
     return { page: this.page };
   }
 
-  async setTestIdAttributeName(): Promise<void> {}
+  async setTestIdAttributeName(params: any): Promise<void> {
+    await this.controller.setTestIdAttributeName(params.testIdAttributeName);
+  }
 
   async close(): Promise<void> {
     await this.disposeTree();
@@ -172,7 +174,8 @@ class ProxyFrameDispatcher extends Dispatcher {
       params.selector,
       null,
       params.state,
-      params.timeout
+      params.timeout,
+      params.strict
     );
     return {
       element: meta ? new ProxyHandleDispatcher(this, this.controller, meta) : undefined,
@@ -185,7 +188,8 @@ class ProxyFrameDispatcher extends Dispatcher {
       null,
       null,
       params.type,
-      params.eventInit
+      params.eventInit,
+      params.strict
     );
   }
 
@@ -197,7 +201,8 @@ class ProxyFrameDispatcher extends Dispatcher {
           null,
           params.expression,
           params.isFunction,
-          params.arg
+          params.arg,
+          params.strict
         )
       ),
     };
@@ -218,7 +223,7 @@ class ProxyFrameDispatcher extends Dispatcher {
   }
 
   async querySelector(params: any): Promise<{ element?: ProxyHandleDispatcher }> {
-    const meta = await this.controller.querySelector(params.selector, null);
+    const meta = await this.controller.querySelector(params.selector, null, params.strict);
     return {
       element: meta ? new ProxyHandleDispatcher(this, this.controller, meta) : undefined,
     };
@@ -253,36 +258,36 @@ class ProxyFrameDispatcher extends Dispatcher {
   }
 
   async click(params: any): Promise<void> {
-    await this.controller.click(params.selector, null, null);
+    await this.controller.click(params.selector, null, null, params.strict);
   }
 
   async dblclick(params: any): Promise<void> {
-    await this.controller.dblclick(params.selector, null, null);
+    await this.controller.dblclick(params.selector, null, null, params.strict);
   }
 
   async fill(params: any): Promise<void> {
-    await this.controller.fill(params.selector, null, null, params.value);
+    await this.controller.fill(params.selector, null, null, params.value, params.strict);
   }
 
   async focus(params: any): Promise<void> {
-    await this.controller.focus(params.selector, null, null);
+    await this.controller.focus(params.selector, null, null, params.strict);
   }
 
   async blur(params: any): Promise<void> {
-    await this.controller.blur(params.selector, null, null);
+    await this.controller.blur(params.selector, null, null, params.strict);
   }
 
   async textContent(params: any): Promise<{ value?: string }> {
-    const value = await this.controller.textContent(params.selector, null, null);
+    const value = await this.controller.textContent(params.selector, null, null, params.strict);
     return value === null ? {} : { value };
   }
 
   async innerText(params: any): Promise<{ value: string }> {
-    return { value: await this.controller.innerText(params.selector, null, null) };
+    return { value: await this.controller.innerText(params.selector, null, null, params.strict) };
   }
 
   async innerHTML(params: any): Promise<{ value: string }> {
-    return { value: await this.controller.innerHTML(params.selector, null, null) };
+    return { value: await this.controller.innerHTML(params.selector, null, null, params.strict) };
   }
 
   async getAttribute(params: any): Promise<{ value?: string }> {
@@ -290,41 +295,78 @@ class ProxyFrameDispatcher extends Dispatcher {
       params.selector,
       null,
       null,
-      params.name
+      params.name,
+      params.strict
     );
     return value === null ? {} : { value };
   }
 
   async inputValue(params: any): Promise<{ value: string }> {
-    return { value: await this.controller.inputValue(params.selector, null, null) };
+    return { value: await this.controller.inputValue(params.selector, null, null, params.strict) };
   }
 
   async isChecked(params: any): Promise<{ value: boolean }> {
-    return { value: await this.controller.boolState("isChecked", params.selector, null, null) };
+    return {
+      value: await this.controller.boolState("isChecked", params.selector, null, null, params.strict),
+    };
   }
 
   async isDisabled(params: any): Promise<{ value: boolean }> {
-    return { value: await this.controller.boolState("isDisabled", params.selector, null, null) };
+    return {
+      value: await this.controller.boolState(
+        "isDisabled",
+        params.selector,
+        null,
+        null,
+        params.strict
+      ),
+    };
   }
 
   async isEditable(params: any): Promise<{ value: boolean }> {
-    return { value: await this.controller.boolState("isEditable", params.selector, null, null) };
+    return {
+      value: await this.controller.boolState(
+        "isEditable",
+        params.selector,
+        null,
+        null,
+        params.strict
+      ),
+    };
   }
 
   async isEnabled(params: any): Promise<{ value: boolean }> {
-    return { value: await this.controller.boolState("isEnabled", params.selector, null, null) };
+    return {
+      value: await this.controller.boolState(
+        "isEnabled",
+        params.selector,
+        null,
+        null,
+        params.strict
+      ),
+    };
   }
 
   async isHidden(params: any): Promise<{ value: boolean }> {
-    return { value: await this.controller.boolState("isHidden", params.selector, null, null) };
+    return {
+      value: await this.controller.boolState("isHidden", params.selector, null, null, params.strict),
+    };
   }
 
   async isVisible(params: any): Promise<{ value: boolean }> {
-    return { value: await this.controller.boolState("isVisible", params.selector, null, null) };
+    return {
+      value: await this.controller.boolState(
+        "isVisible",
+        params.selector,
+        null,
+        null,
+        params.strict
+      ),
+    };
   }
 
   async hover(params: any): Promise<void> {
-    await this.controller.hover(params.selector, null, null);
+    await this.controller.hover(params.selector, null, null, params.strict);
   }
 
   async selectOption(params: any): Promise<{ values: string[] }> {
@@ -334,25 +376,40 @@ class ProxyFrameDispatcher extends Dispatcher {
         null,
         null,
         params.options || [],
-        params.elements || []
+        params.elements || [],
+        params.strict
       ),
     };
   }
 
   async type(params: any): Promise<void> {
-    await this.controller.type(params.selector, null, null, params.text);
+    await this.controller.type(params.selector, null, null, params.text, params.strict);
   }
 
   async press(params: any): Promise<void> {
-    await this.controller.press(params.selector, null, null, params.key);
+    await this.controller.press(params.selector, null, null, params.key, params.strict);
   }
 
   async check(params: any): Promise<void> {
-    await this.controller.setChecked(params.selector, null, null, true, params.trial);
+    await this.controller.setChecked(
+      params.selector,
+      null,
+      null,
+      true,
+      params.trial,
+      params.strict
+    );
   }
 
   async uncheck(params: any): Promise<void> {
-    await this.controller.setChecked(params.selector, null, null, false, params.trial);
+    await this.controller.setChecked(
+      params.selector,
+      null,
+      null,
+      false,
+      params.trial,
+      params.strict
+    );
   }
 
   async waitForTimeout(params: any): Promise<void> {
