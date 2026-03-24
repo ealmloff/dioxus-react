@@ -346,6 +346,7 @@
   }
   function LocatorLab() {
     const [saved, setSaved] = (0, import_react.useState)(false);
+    const [selectorState, setSelectorState] = (0, import_react.useState)("idle");
     return /* @__PURE__ */ import_react.default.createElement("div", { className: "card automation-card", id: "locator-lab" }, /* @__PURE__ */ import_react.default.createElement("h2", null, "Locator Lab"), /* @__PURE__ */ import_react.default.createElement("p", { className: "subtitle" }, "Deterministic fixtures for semantic locator coverage."), /* @__PURE__ */ import_react.default.createElement("div", { className: "lab-grid locator-grid" }, /* @__PURE__ */ import_react.default.createElement("section", { className: "lab-panel", id: "locator-label-panel" }, /* @__PURE__ */ import_react.default.createElement("h3", null, "Labels and Placeholders"), /* @__PURE__ */ import_react.default.createElement("div", { className: "row" }, /* @__PURE__ */ import_react.default.createElement("label", { className: "lab-label", id: "locator-name-label", htmlFor: "locator-name" }, "Full name"), /* @__PURE__ */ import_react.default.createElement(
       "input",
       {
@@ -391,7 +392,31 @@
         "aria-label": "role button sample"
       },
       "Role Button"
-    ), /* @__PURE__ */ import_react.default.createElement("div", { id: "locator-status", role: "status", "aria-label": "save status" }, saved ? "Saved status" : "Idle status"), /* @__PURE__ */ import_react.default.createElement("a", { id: "locator-link", href: "#locator-lab", title: "jump to locator lab" }, "Locator link"))));
+    ), /* @__PURE__ */ import_react.default.createElement("div", { id: "locator-status", role: "status", "aria-label": "save status" }, saved ? "Saved status" : "Idle status"), /* @__PURE__ */ import_react.default.createElement("a", { id: "locator-link", href: "#locator-lab", title: "jump to locator lab" }, "Locator link")), /* @__PURE__ */ import_react.default.createElement("section", { className: "lab-panel", id: "locator-selector-panel" }, /* @__PURE__ */ import_react.default.createElement("h3", null, "Selector Combinators"), /* @__PURE__ */ import_react.default.createElement("p", { className: "subtitle" }, "Visible and hidden fixtures for locator filters and combinators."), /* @__PURE__ */ import_react.default.createElement("div", { className: "selector-note-row" }, /* @__PURE__ */ import_react.default.createElement("p", { className: "selector-note", "data-kind": "visible-note" }, "Visible selector note"), /* @__PURE__ */ import_react.default.createElement("p", { className: "selector-note selector-note-hidden", hidden: true, "data-kind": "hidden-note" }, "Hidden selector note")), /* @__PURE__ */ import_react.default.createElement("div", { className: "selector-card-list" }, /* @__PURE__ */ import_react.default.createElement("article", { className: "selector-card", "data-card": "alpha" }, /* @__PURE__ */ import_react.default.createElement("h4", null, "Alpha card"), /* @__PURE__ */ import_react.default.createElement("p", null, "Shared details"), /* @__PURE__ */ import_react.default.createElement(
+      "button",
+      {
+        className: "btn btn-sm",
+        title: "open alpha card",
+        onClick: () => setSelectorState("alpha")
+      },
+      "Open Alpha"
+    )), /* @__PURE__ */ import_react.default.createElement("article", { className: "selector-card", "data-card": "beta" }, /* @__PURE__ */ import_react.default.createElement("h4", null, "Beta card"), /* @__PURE__ */ import_react.default.createElement("p", null, "Shared details"), /* @__PURE__ */ import_react.default.createElement(
+      "button",
+      {
+        className: "btn btn-sm",
+        title: "open beta card",
+        onClick: () => setSelectorState("beta")
+      },
+      "Open Beta"
+    )), /* @__PURE__ */ import_react.default.createElement("article", { className: "selector-card", "data-card": "gamma" }, /* @__PURE__ */ import_react.default.createElement("h4", null, "Gamma card"), /* @__PURE__ */ import_react.default.createElement("p", null, "Unique details"), /* @__PURE__ */ import_react.default.createElement(
+      "button",
+      {
+        className: "btn btn-sm",
+        title: "open gamma card",
+        onClick: () => setSelectorState("gamma")
+      },
+      "Open Gamma"
+    ))), /* @__PURE__ */ import_react.default.createElement("p", { id: "selector-status", className: "lab-output" }, selectorState))));
   }
   var TAB_NAMES = [
     "System Info",

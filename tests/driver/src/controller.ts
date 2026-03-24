@@ -657,6 +657,15 @@ export class ProxyAppController {
     return await this.runtimeCall("queryCount", { selector, rootHandleId });
   }
 
+  async resolveSelector(selector: string, rootHandleId: number | null): Promise<string> {
+    const result = await this.runtimeCall("resolveSelector", { selector, rootHandleId });
+    return result.resolvedSelector;
+  }
+
+  async highlight(selector: string, rootHandleId: number | null): Promise<void> {
+    await this.runtimeCall("highlight", { selector, rootHandleId });
+  }
+
   async content(): Promise<string> {
     return await this.runtimeCall("content");
   }
@@ -736,6 +745,19 @@ export class ProxyAppController {
     strict?: boolean
   ): Promise<void> {
     await this.runtimeCall("hover", { selector, rootHandleId, handleId, strict: !!strict });
+  }
+
+  async tap(
+    selector: string | null,
+    rootHandleId: number | null,
+    handleId: number | null,
+    strict?: boolean
+  ): Promise<void> {
+    await this.runtimeCall("click", { selector, rootHandleId, handleId, strict: !!strict });
+  }
+
+  async scrollIntoViewIfNeeded(handleId: number): Promise<void> {
+    await this.runtimeCall("scrollIntoViewIfNeeded", { handleId });
   }
 
   async dispatchEvent(

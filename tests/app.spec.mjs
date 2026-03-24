@@ -181,6 +181,39 @@ test("exposes stable locator fixtures for labels, titles, placeholders, text, an
   await expect.poll(() => currentPage().textContent("#locator-status")).toBe("Saved status");
 });
 
+test("supports advanced locator combinators on real app fixtures", async () => {
+  await clickTab("Locator Lab");
+  await expect.poll(() => currentPage().textContent("h2")).toBe("Locator Lab");
+
+  const notes = currentPage().locator(".selector-note");
+  expect(await notes.filter({ visible: true }).count()).toBe(1);
+  expect(await notes.filter({ visible: false }).count()).toBe(1);
+
+  const cards = currentPage().locator(".selector-card");
+  expect(await cards.count()).toBe(3);
+  expect(await cards.filter({ hasText: "Shared details" }).count()).toBe(2);
+  expect(await cards.filter({ hasNotText: "Beta" }).count()).toBe(2);
+
+  const betaButton = currentPage().getByRole("button", { name: "Open Beta" });
+  expect(await cards.filter({ has: betaButton }).count()).toBe(1);
+  expect(await cards.filter({ hasNot: betaButton }).count()).toBe(2);
+
+  const alphaButton = currentPage()
+    .getByRole("button", { name: "Open Alpha" })
+    .and(currentPage().getByTitle("open alpha card"));
+  expect(await alphaButton.count()).toBe(1);
+  await alphaButton.click();
+  await expect.poll(() => currentPage().textContent("#selector-status")).toBe("alpha");
+
+  const union = currentPage()
+    .getByRole("button", { name: "Open Alpha" })
+    .or(currentPage().getByRole("button", { name: "Open Gamma" }));
+  expect(await union.count()).toBe(2);
+
+  await union.last().click();
+  await expect.poll(() => currentPage().textContent("#selector-status")).toBe("gamma");
+});
+
 test("supports waiters and event dispatch", async () => {
   await clickTab("Automation Lab");
 

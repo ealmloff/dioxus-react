@@ -5,15 +5,22 @@ import type { HandleMeta } from "../types";
 
 export class ProxyHandleDispatcher extends Dispatcher {
   readonly handleId: number;
+  private handleOwnerFrame: any;
   private controller: ProxyAppController;
 
-  constructor(parent: any, controller: ProxyAppController, meta: HandleMeta) {
+  constructor(
+    parent: any,
+    controller: ProxyAppController,
+    meta: HandleMeta,
+    ownerFrame: any
+  ) {
     const object = new ProxyObject(parent._object, "proxyHandle");
     super(parent, object, meta.type === "element" ? "ElementHandle" : "JSHandle", {
       preview: meta.preview,
     });
     this.controller = controller;
     this.handleId = meta.id;
+    this.handleOwnerFrame = ownerFrame;
   }
 
   async evaluateExpression(params: any): Promise<{ value: unknown }> {
@@ -36,12 +43,26 @@ export class ProxyHandleDispatcher extends Dispatcher {
       params.isFunction,
       params.arg
     );
-    return { handle: new ProxyHandleDispatcher(this.parentScope(), this.controller, meta) };
+    return {
+      handle: new ProxyHandleDispatcher(
+        this.parentScope(),
+        this.controller,
+        meta,
+        this.handleOwnerFrame
+      ),
+    };
   }
 
   async getProperty(params: any): Promise<{ handle: ProxyHandleDispatcher }> {
     const meta = await this.controller.getHandleProperty(this.handleId, params.name);
-    return { handle: new ProxyHandleDispatcher(this.parentScope(), this.controller, meta) };
+    return {
+      handle: new ProxyHandleDispatcher(
+        this.parentScope(),
+        this.controller,
+        meta,
+        this.handleOwnerFrame
+      ),
+    };
   }
 
   async getPropertyList(): Promise<{
@@ -51,9 +72,22 @@ export class ProxyHandleDispatcher extends Dispatcher {
     return {
       properties: properties.map((entry) => ({
         name: entry.name,
-        value: new ProxyHandleDispatcher(this.parentScope(), this.controller, entry.handle),
+        value: new ProxyHandleDispatcher(
+          this.parentScope(),
+          this.controller,
+          entry.handle,
+          this.handleOwnerFrame
+        ),
       })),
     };
+  }
+
+  async ownerFrame(): Promise<{ frame: any }> {
+    return { frame: this.handleOwnerFrame };
+  }
+
+  async contentFrame(): Promise<{ frame: null }> {
+    return { frame: null };
   }
 
   async jsonValue(): Promise<{ value: unknown }> {
@@ -121,6 +155,10 @@ export class ProxyHandleDispatcher extends Dispatcher {
     );
   }
 
+  async scrollIntoViewIfNeeded(): Promise<void> {
+    await this.controller.scrollIntoViewIfNeeded(this.handleId);
+  }
+
   async hover(): Promise<void> {
     await this.controller.hover(null, null, this.handleId);
   }
@@ -131,6 +169,10 @@ export class ProxyHandleDispatcher extends Dispatcher {
 
   async dblclick(): Promise<void> {
     await this.controller.dblclick(null, null, this.handleId);
+  }
+
+  async tap(): Promise<void> {
+    await this.click();
   }
 
   async selectOption(params: any): Promise<{ values: string[] }> {
@@ -177,7 +219,12 @@ export class ProxyHandleDispatcher extends Dispatcher {
     );
     return {
       element: meta
-        ? new ProxyHandleDispatcher(this.parentScope(), this.controller, meta)
+        ? new ProxyHandleDispatcher(
+            this.parentScope(),
+            this.controller,
+            meta,
+            this.handleOwnerFrame
+          )
         : undefined,
     };
   }
@@ -186,7 +233,13 @@ export class ProxyHandleDispatcher extends Dispatcher {
     const elements = await this.controller.querySelectorAll(params.selector, this.handleId);
     return {
       elements: elements.map(
-        (meta) => new ProxyHandleDispatcher(this.parentScope(), this.controller, meta)
+        (meta) =>
+          new ProxyHandleDispatcher(
+            this.parentScope(),
+            this.controller,
+            meta,
+            this.handleOwnerFrame
+          )
       ),
     };
   }
@@ -230,7 +283,7 @@ export class ProxyHandleDispatcher extends Dispatcher {
     );
     return {
       element: meta
-        ? new ProxyHandleDispatcher(this.parentScope(), this.controller, meta)
+        ? new ProxyHandleDispatcher(this.parentScope(), this.controller, meta, this.handleOwnerFrame)
         : undefined,
     };
   }

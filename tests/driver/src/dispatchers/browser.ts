@@ -123,7 +123,10 @@ class ProxyPageDispatcher extends Dispatcher {
 class ProxyFrameDispatcher extends Dispatcher {
   private controller: ProxyAppController;
 
-  constructor(parent: any, controller: ProxyAppController) {
+  constructor(
+    parent: any,
+    controller: ProxyAppController,
+  ) {
     const object = new ProxyObject(parent._object, "proxyFrame");
     super(parent, object, "Frame", {
       url: controller.snapshotState.url,
@@ -166,7 +169,7 @@ class ProxyFrameDispatcher extends Dispatcher {
       params.isFunction,
       params.arg
     );
-    return { handle: new ProxyHandleDispatcher(this, this.controller, meta) };
+    return { handle: new ProxyHandleDispatcher(this, this.controller, meta, this) };
   }
 
   async waitForSelector(params: any): Promise<{ element?: ProxyHandleDispatcher }> {
@@ -178,7 +181,7 @@ class ProxyFrameDispatcher extends Dispatcher {
       params.strict
     );
     return {
-      element: meta ? new ProxyHandleDispatcher(this, this.controller, meta) : undefined,
+      element: meta ? new ProxyHandleDispatcher(this, this.controller, meta, this) : undefined,
     };
   }
 
@@ -189,7 +192,7 @@ class ProxyFrameDispatcher extends Dispatcher {
       null,
       params.type,
       params.eventInit,
-      params.strict
+      params.strict,
     );
   }
 
@@ -225,7 +228,7 @@ class ProxyFrameDispatcher extends Dispatcher {
   async querySelector(params: any): Promise<{ element?: ProxyHandleDispatcher }> {
     const meta = await this.controller.querySelector(params.selector, null, params.strict);
     return {
-      element: meta ? new ProxyHandleDispatcher(this, this.controller, meta) : undefined,
+      element: meta ? new ProxyHandleDispatcher(this, this.controller, meta, this) : undefined,
     };
   }
 
@@ -233,9 +236,17 @@ class ProxyFrameDispatcher extends Dispatcher {
     const elements = await this.controller.querySelectorAll(params.selector, null);
     return {
       elements: elements.map(
-        (meta) => new ProxyHandleDispatcher(this, this.controller, meta)
+        (meta) => new ProxyHandleDispatcher(this, this.controller, meta, this)
       ),
     };
+  }
+
+  async resolveSelector(params: any): Promise<{ resolvedSelector: string }> {
+    return { resolvedSelector: await this.controller.resolveSelector(params.selector, null) };
+  }
+
+  async highlight(params: any): Promise<void> {
+    await this.controller.highlight(params.selector, null);
   }
 
   async queryCount(params: any): Promise<{ value: number }> {
@@ -263,6 +274,10 @@ class ProxyFrameDispatcher extends Dispatcher {
 
   async dblclick(params: any): Promise<void> {
     await this.controller.dblclick(params.selector, null, null, params.strict);
+  }
+
+  async tap(params: any): Promise<void> {
+    await this.controller.tap(params.selector, null, null, params.strict);
   }
 
   async fill(params: any): Promise<void> {
@@ -424,7 +439,7 @@ class ProxyFrameDispatcher extends Dispatcher {
       params.timeout,
       params.pollingInterval
     );
-    return { handle: new ProxyHandleDispatcher(this, this.controller, meta) };
+    return { handle: new ProxyHandleDispatcher(this, this.controller, meta, this) };
   }
 
   async title(): Promise<{ value: string }> {

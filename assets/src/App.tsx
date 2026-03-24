@@ -599,6 +599,7 @@ function AutomationLab() {
 
 function LocatorLab() {
   const [saved, setSaved] = useState(false);
+  const [selectorState, setSelectorState] = useState("idle");
 
   return (
     <div className="card automation-card" id="locator-lab">
@@ -678,6 +679,64 @@ function LocatorLab() {
           <a id="locator-link" href="#locator-lab" title="jump to locator lab">
             Locator link
           </a>
+        </section>
+
+        <section className="lab-panel" id="locator-selector-panel">
+          <h3>Selector Combinators</h3>
+          <p className="subtitle">
+            Visible and hidden fixtures for locator filters and combinators.
+          </p>
+
+          <div className="selector-note-row">
+            <p className="selector-note" data-kind="visible-note">
+              Visible selector note
+            </p>
+            <p className="selector-note selector-note-hidden" hidden data-kind="hidden-note">
+              Hidden selector note
+            </p>
+          </div>
+
+          <div className="selector-card-list">
+            <article className="selector-card" data-card="alpha">
+              <h4>Alpha card</h4>
+              <p>Shared details</p>
+              <button
+                className="btn btn-sm"
+                title="open alpha card"
+                onClick={() => setSelectorState("alpha")}
+              >
+                Open Alpha
+              </button>
+            </article>
+
+            <article className="selector-card" data-card="beta">
+              <h4>Beta card</h4>
+              <p>Shared details</p>
+              <button
+                className="btn btn-sm"
+                title="open beta card"
+                onClick={() => setSelectorState("beta")}
+              >
+                Open Beta
+              </button>
+            </article>
+
+            <article className="selector-card" data-card="gamma">
+              <h4>Gamma card</h4>
+              <p>Unique details</p>
+              <button
+                className="btn btn-sm"
+                title="open gamma card"
+                onClick={() => setSelectorState("gamma")}
+              >
+                Open Gamma
+              </button>
+            </article>
+          </div>
+
+          <p id="selector-status" className="lab-output">
+            {selectorState}
+          </p>
         </section>
       </div>
     </div>

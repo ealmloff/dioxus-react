@@ -18,6 +18,8 @@ interface InjectedScriptLike {
   parseSelector(selector: string): unknown;
   querySelector(selector: unknown, root: Node, strict: boolean): Element | undefined;
   querySelectorAll(selector: unknown, root: Node): Element[];
+  generateSelectorSimple(targetElement: Element, options?: AnyRecord): string;
+  highlight(selector: unknown): void;
   elementState(
     node: Node,
     state: ElementStateName
@@ -107,17 +109,24 @@ export default function installPlaywrightRuntime(version: number): true {
     return state.injectedScript;
   };
 
-  const parseSelector = (selector: string): unknown => {
-    const cached = state.parsedSelectors.get(selector);
+  const validateSelector = (selector: unknown): string => {
+    if (typeof selector === "string") return selector;
+    if (selector instanceof String) return selector.valueOf();
+    throw new Error(`selector: expected string, got ${typeof selector}`);
+  };
+
+  const parseSelector = (selector: unknown): unknown => {
+    const value = validateSelector(selector);
+    const cached = state.parsedSelectors.get(value);
     if (cached) return cached;
 
-    const parsed = getInjectedScript().parseSelector(selector);
-    state.parsedSelectors.set(selector, parsed);
+    const parsed = getInjectedScript().parseSelector(value);
+    state.parsedSelectors.set(value, parsed);
     return parsed;
   };
 
   const querySelector = (
-    selector: string,
+    selector: unknown,
     rootHandleId: number | null | undefined,
     strict = false
   ): Element | null => {
@@ -127,7 +136,7 @@ export default function installPlaywrightRuntime(version: number): true {
   };
 
   const querySelectorAll = (
-    selector: string,
+    selector: unknown,
     rootHandleId: number | null | undefined
   ): Element[] => {
     const root = resolveRoot(rootHandleId);
@@ -137,7 +146,7 @@ export default function installPlaywrightRuntime(version: number): true {
 
   const resolveTarget = (payload: AnyRecord): any => {
     if (payload.handleId) return resolveHandle(payload.handleId);
-    if (typeof payload.selector === "string") {
+    if (Object.prototype.hasOwnProperty.call(payload, "selector")) {
       return querySelector(payload.selector, payload.rootHandleId, !!payload.strict);
     }
     return null;
@@ -239,6 +248,16 @@ export default function installPlaywrightRuntime(version: number): true {
       return;
     }
     throw new Error("Target does not support textual value");
+  };
+
+  const scrollIntoViewIfNeeded = (target: any): void => {
+    if (!(target instanceof Element)) throw new Error("Target is not an element");
+    const targetAsAny = target as AnyRecord;
+    if (typeof targetAsAny.scrollIntoViewIfNeeded === "function") {
+      targetAsAny.scrollIntoViewIfNeeded(false);
+      return;
+    }
+    target.scrollIntoView();
   };
 
   const getTextValue = (target: any): string => {
@@ -478,6 +497,22 @@ export default function installPlaywrightRuntime(version: number): true {
       return querySelectorAll(payload.selector, payload.rootHandleId).length;
     },
 
+    resolveSelector(payload: AnyRecord) {
+      const element = querySelector(payload.selector, payload.rootHandleId, !!payload.strict);
+      if (!element) throw new Error("No element matching " + payload.selector);
+      const resolvedSelector = getInjectedScript().generateSelectorSimple(element);
+      if (!resolvedSelector) {
+        throw new Error("Unable to generate locator for " + payload.selector);
+      }
+      return { resolvedSelector };
+    },
+
+    highlight(payload: AnyRecord) {
+      const parsed = parseSelector(payload.selector);
+      getInjectedScript().highlight(parsed);
+      return null;
+    },
+
     resetHandles() {
       state.nextHandleId = 1;
       state.handles.clear();
@@ -517,7 +552,9 @@ export default function installPlaywrightRuntime(version: number): true {
 
     evalOnSelector(payload: AnyRecord) {
       const element = querySelector(payload.selector, payload.rootHandleId, !!payload.strict);
-      if (!element) throw new Error("No element matches selector: " + payload.selector);
+      if (!element) {
+        throw new Error(`Failed to find element matching selector "${payload.selector}"`);
+      }
       return executeExpression(
         payload.expression,
         payload.isFunction,
@@ -600,6 +637,11 @@ export default function installPlaywrightRuntime(version: number): true {
       const target = requireTarget(payload);
       dispatchSyntheticEvent(target, "mouseover", {});
       dispatchSyntheticEvent(target, "mouseenter", {});
+      return null;
+    },
+
+    scrollIntoViewIfNeeded(payload: AnyRecord) {
+      scrollIntoViewIfNeeded(requireTarget(payload));
       return null;
     },
 
