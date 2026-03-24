@@ -541,6 +541,9 @@
     const [selectedFile, setSelectedFile] = (0, import_react.useState)("none");
     const [geolocationOutput, setGeolocationOutput] = (0, import_react.useState)("not-run");
     const [locatorOutput, setLocatorOutput] = (0, import_react.useState)("none");
+    const [consoleOutput, setConsoleOutput] = (0, import_react.useState)("idle");
+    const [pageErrorOutput, setPageErrorOutput] = (0, import_react.useState)("idle");
+    const [dragOutput, setDragOutput] = (0, import_react.useState)("idle");
     (0, import_react.useEffect)(() => {
       const onHashChange = () => setHashValue(window.location.hash || "(none)");
       const onResize = () => setViewportValue(`${window.innerWidth}x${window.innerHeight}`);
@@ -585,6 +588,16 @@
       const response = window.confirm("Surface dialog probe");
       setDialogOutput(response ? "confirmed" : "dismissed");
     };
+    const runConsoleProbe = () => {
+      console.log("surface-console-probe");
+      setConsoleOutput("surface-console-probe");
+    };
+    const runPageErrorProbe = () => {
+      setPageErrorOutput("scheduled");
+      queueMicrotask(() => {
+        Promise.reject(new Error("surface-page-error"));
+      });
+    };
     return /* @__PURE__ */ import_react.default.createElement("div", { className: "card automation-card", id: "surface-lab" }, /* @__PURE__ */ import_react.default.createElement("h2", null, "Playwright Surface Lab"), /* @__PURE__ */ import_react.default.createElement("p", { className: "subtitle" }, "Fixture surfaces for proxy parity expansion."), /* @__PURE__ */ import_react.default.createElement("div", { className: "lab-grid" }, /* @__PURE__ */ import_react.default.createElement("section", { className: "lab-panel", id: "surface-nav-panel" }, /* @__PURE__ */ import_react.default.createElement("h3", null, "Navigation"), /* @__PURE__ */ import_react.default.createElement("a", { id: "surface-nav-link", href: "#surface-anchor" }, "Go to hash anchor"), /* @__PURE__ */ import_react.default.createElement("p", { id: "surface-nav-output", className: "lab-output" }, hashValue), /* @__PURE__ */ import_react.default.createElement("p", { id: "surface-anchor", className: "lab-output" }, "surface anchor")), /* @__PURE__ */ import_react.default.createElement("section", { className: "lab-panel", id: "surface-network-panel" }, /* @__PURE__ */ import_react.default.createElement("h3", null, "Network Probe"), /* @__PURE__ */ import_react.default.createElement("button", { id: "surface-network-probe", className: "btn btn-sm", onClick: runNetworkProbe }, "Run fetch probe"), /* @__PURE__ */ import_react.default.createElement("p", { id: "surface-network-output", className: "lab-output" }, networkProbe)), /* @__PURE__ */ import_react.default.createElement("section", { className: "lab-panel", id: "surface-viewport-panel" }, /* @__PURE__ */ import_react.default.createElement("h3", null, "Viewport Surface"), /* @__PURE__ */ import_react.default.createElement("p", { id: "surface-viewport-output", className: "lab-output" }, viewportValue)), /* @__PURE__ */ import_react.default.createElement("section", { className: "lab-panel", id: "surface-keyboard-panel" }, /* @__PURE__ */ import_react.default.createElement("h3", null, "Keyboard Surface"), /* @__PURE__ */ import_react.default.createElement(
       "input",
       {
@@ -623,37 +636,70 @@
         onClick: runDialogProbe
       },
       "Open dialog"
-    ), /* @__PURE__ */ import_react.default.createElement("p", { id: "surface-dialog-output", className: "lab-output" }, dialogOutput)), /* @__PURE__ */ import_react.default.createElement("section", { className: "lab-panel", id: "surface-locator-panel" }, /* @__PURE__ */ import_react.default.createElement("h3", null, "Locator Surface"), /* @__PURE__ */ import_react.default.createElement("div", { id: "surface-locator-list", role: "list" }, /* @__PURE__ */ import_react.default.createElement(
+    ), /* @__PURE__ */ import_react.default.createElement("p", { id: "surface-dialog-output", className: "lab-output" }, dialogOutput)), /* @__PURE__ */ import_react.default.createElement("section", { className: "lab-panel", id: "surface-console-panel" }, /* @__PURE__ */ import_react.default.createElement("h3", null, "Console Surface"), /* @__PURE__ */ import_react.default.createElement(
+      "button",
+      {
+        id: "surface-console-button",
+        className: "btn btn-sm",
+        onClick: runConsoleProbe
+      },
+      "Emit console log"
+    ), /* @__PURE__ */ import_react.default.createElement("p", { id: "surface-console-output", className: "lab-output" }, consoleOutput)), /* @__PURE__ */ import_react.default.createElement("section", { className: "lab-panel", id: "surface-error-panel" }, /* @__PURE__ */ import_react.default.createElement("h3", null, "Page Error Surface"), /* @__PURE__ */ import_react.default.createElement(
+      "button",
+      {
+        id: "surface-pageerror-button",
+        className: "btn btn-sm",
+        onClick: runPageErrorProbe
+      },
+      "Throw async error"
+    ), /* @__PURE__ */ import_react.default.createElement("p", { id: "surface-pageerror-output", className: "lab-output" }, pageErrorOutput)), /* @__PURE__ */ import_react.default.createElement("section", { className: "lab-panel", id: "surface-locator-panel" }, /* @__PURE__ */ import_react.default.createElement("h3", null, "Locator Surface"), /* @__PURE__ */ import_react.default.createElement("div", { id: "surface-locator-list", role: "list" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "surface-locator-item", role: "listitem" }, /* @__PURE__ */ import_react.default.createElement(
       "button",
       {
         id: "surface-locator-alpha",
         className: "btn btn-sm",
-        role: "listitem",
-        "aria-label": "surface locator alpha",
         onClick: () => setLocatorOutput("alpha")
       },
       "Open Surface Alpha"
-    ), /* @__PURE__ */ import_react.default.createElement(
+    )), /* @__PURE__ */ import_react.default.createElement("div", { className: "surface-locator-item", role: "listitem" }, /* @__PURE__ */ import_react.default.createElement(
       "button",
       {
         id: "surface-locator-beta",
         className: "btn btn-sm",
-        role: "listitem",
-        "aria-label": "surface locator beta",
         onClick: () => setLocatorOutput("beta")
       },
       "Open Surface Beta"
-    ), /* @__PURE__ */ import_react.default.createElement(
+    )), /* @__PURE__ */ import_react.default.createElement("div", { className: "surface-locator-item", role: "listitem" }, /* @__PURE__ */ import_react.default.createElement(
       "button",
       {
         id: "surface-locator-gamma",
         className: "btn btn-sm",
-        role: "listitem",
-        "aria-label": "surface locator gamma",
         onClick: () => setLocatorOutput("gamma")
       },
       "Open Surface Gamma"
-    )), /* @__PURE__ */ import_react.default.createElement("p", { id: "surface-locator-output", className: "lab-output" }, locatorOutput)), /* @__PURE__ */ import_react.default.createElement("section", { className: "lab-panel", id: "surface-shot-panel" }, /* @__PURE__ */ import_react.default.createElement("h3", null, "Screenshot Surface"), /* @__PURE__ */ import_react.default.createElement("div", { id: "surface-screenshot-target", className: "surface-shot-target" }, "Screenshot target"))));
+    ))), /* @__PURE__ */ import_react.default.createElement("p", { id: "surface-locator-output", className: "lab-output" }, locatorOutput)), /* @__PURE__ */ import_react.default.createElement("section", { className: "lab-panel", id: "surface-shot-panel" }, /* @__PURE__ */ import_react.default.createElement("h3", null, "Screenshot Surface"), /* @__PURE__ */ import_react.default.createElement("div", { id: "surface-screenshot-target", className: "surface-shot-target" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "surface-shot-block surface-shot-block-red" }), /* @__PURE__ */ import_react.default.createElement("div", { className: "surface-shot-block surface-shot-block-green" }), /* @__PURE__ */ import_react.default.createElement("div", { className: "surface-shot-block surface-shot-block-blue" }))), /* @__PURE__ */ import_react.default.createElement("section", { className: "lab-panel", id: "surface-drag-panel" }, /* @__PURE__ */ import_react.default.createElement("h3", null, "Drag Surface"), /* @__PURE__ */ import_react.default.createElement(
+      "div",
+      {
+        id: "surface-drag-source",
+        className: "surface-drag-source",
+        draggable: true,
+        onDragStart: (event) => {
+          event.dataTransfer.setData("text/plain", "surface-drag");
+        }
+      },
+      "Drag me"
+    ), /* @__PURE__ */ import_react.default.createElement(
+      "div",
+      {
+        id: "surface-drop-target",
+        className: "surface-drag-target",
+        onDragOver: (event) => event.preventDefault(),
+        onDrop: (event) => {
+          event.preventDefault();
+          setDragOutput(event.dataTransfer.getData("text/plain") || "dropped");
+        }
+      },
+      "Drop target"
+    ), /* @__PURE__ */ import_react.default.createElement("p", { id: "surface-drag-output", className: "lab-output" }, dragOutput))));
   }
   var TAB_NAMES = [
     "System Info",

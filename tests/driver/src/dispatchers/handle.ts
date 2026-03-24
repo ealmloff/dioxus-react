@@ -9,8 +9,10 @@ import type {
   FillParams,
   NameParams,
   PressParams,
+  ScreenshotParams,
   SelectorEvalParams,
   SelectOptionParams,
+  SetInputFilesParams,
   SelectorParamsWithStrict,
   TypeParams,
   WaitSelectorParams,
@@ -20,6 +22,10 @@ interface HandleOwnerScope {
   frameId: number;
   frameForId(frameId: number): unknown;
 }
+
+declare const Buffer: {
+  from(data: Uint8Array): Uint8Array;
+};
 
 export class ProxyHandleDispatcher extends Dispatcher {
   readonly handleId: number;
@@ -181,6 +187,10 @@ export class ProxyHandleDispatcher extends Dispatcher {
     await this.controller.scrollIntoViewIfNeeded(this.handleId);
   }
 
+  async screenshot(_params: ScreenshotParams): Promise<{ binary: Uint8Array }> {
+    return { binary: Buffer.from(await this.controller.elementScreenshot(this.handleId)) };
+  }
+
   async hover(): Promise<void> {
     await this.controller.hover(null, null, this.handleId);
   }
@@ -211,6 +221,15 @@ export class ProxyHandleDispatcher extends Dispatcher {
 
   async fill(params: FillParams): Promise<void> {
     await this.controller.fill(null, null, this.handleId, params.value);
+  }
+
+  async setInputFiles(params: SetInputFilesParams): Promise<void> {
+    await this.controller.setInputFiles(
+      null,
+      null,
+      this.handleId,
+      params.payloads || []
+    );
   }
 
   async focus(): Promise<void> {

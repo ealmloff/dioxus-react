@@ -494,22 +494,61 @@ input[type="number"] {
 #surface-keyboard-output,
 #surface-file-output,
 #surface-geolocation-output,
-#surface-locator-output {
+#surface-locator-output,
+#surface-console-output,
+#surface-pageerror-output,
+#surface-drag-output {
   margin-top: 10px;
 }
 
 .surface-shot-target {
   width: 320px;
   height: 120px;
-  background: linear-gradient(135deg, #2563eb22, #0ea5e922);
-  border: 1px dashed #64748b;
+  box-sizing: border-box;
+  overflow: hidden;
+  background: #f8fafc;
+  border: 2px solid #0f172a;
   border-radius: 8px;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.surface-shot-block {
+  min-width: 0;
+  min-height: 0;
+}
+
+.surface-shot-block-red {
+  background: #ef4444;
+}
+
+.surface-shot-block-green {
+  background: #22c55e;
+}
+
+.surface-shot-block-blue {
+  background: #3b82f6;
+}
+
+.surface-drag-source,
+.surface-drag-target {
+  min-height: 64px;
+  border-radius: 8px;
+  border: 1px dashed #64748b;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #f8fafc;
-  font-weight: 600;
-  letter-spacing: 0.02em;
+  margin-top: 10px;
+  padding: 12px;
+}
+
+.surface-drag-source {
+  background: linear-gradient(135deg, #22c55e1f, #14b8a61a);
+  cursor: grab;
+}
+
+.surface-drag-target {
+  background: linear-gradient(135deg, #f59e0b1c, #ef44441c);
 }
 
 /* Scrollbar */

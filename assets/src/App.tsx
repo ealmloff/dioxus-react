@@ -882,6 +882,9 @@ function PlaywrightSurfaceLab() {
   const [selectedFile, setSelectedFile] = useState("none");
   const [geolocationOutput, setGeolocationOutput] = useState("not-run");
   const [locatorOutput, setLocatorOutput] = useState("none");
+  const [consoleOutput, setConsoleOutput] = useState("idle");
+  const [pageErrorOutput, setPageErrorOutput] = useState("idle");
+  const [dragOutput, setDragOutput] = useState("idle");
 
   useEffect(() => {
     const onHashChange = () => setHashValue(window.location.hash || "(none)");
@@ -932,6 +935,18 @@ function PlaywrightSurfaceLab() {
     setDialogOutput("requested");
     const response = window.confirm("Surface dialog probe");
     setDialogOutput(response ? "confirmed" : "dismissed");
+  };
+
+  const runConsoleProbe = () => {
+    console.log("surface-console-probe");
+    setConsoleOutput("surface-console-probe");
+  };
+
+  const runPageErrorProbe = () => {
+    setPageErrorOutput("scheduled");
+    queueMicrotask(() => {
+      Promise.reject(new Error("surface-page-error"));
+    });
   };
 
   return (
@@ -1031,36 +1046,64 @@ function PlaywrightSurfaceLab() {
           </p>
         </section>
 
+        <section className="lab-panel" id="surface-console-panel">
+          <h3>Console Surface</h3>
+          <button
+            id="surface-console-button"
+            className="btn btn-sm"
+            onClick={runConsoleProbe}
+          >
+            Emit console log
+          </button>
+          <p id="surface-console-output" className="lab-output">
+            {consoleOutput}
+          </p>
+        </section>
+
+        <section className="lab-panel" id="surface-error-panel">
+          <h3>Page Error Surface</h3>
+          <button
+            id="surface-pageerror-button"
+            className="btn btn-sm"
+            onClick={runPageErrorProbe}
+          >
+            Throw async error
+          </button>
+          <p id="surface-pageerror-output" className="lab-output">
+            {pageErrorOutput}
+          </p>
+        </section>
+
         <section className="lab-panel" id="surface-locator-panel">
           <h3>Locator Surface</h3>
           <div id="surface-locator-list" role="list">
-            <button
-              id="surface-locator-alpha"
-              className="btn btn-sm"
-              role="listitem"
-              aria-label="surface locator alpha"
-              onClick={() => setLocatorOutput("alpha")}
-            >
-              Open Surface Alpha
-            </button>
-            <button
-              id="surface-locator-beta"
-              className="btn btn-sm"
-              role="listitem"
-              aria-label="surface locator beta"
-              onClick={() => setLocatorOutput("beta")}
-            >
-              Open Surface Beta
-            </button>
-            <button
-              id="surface-locator-gamma"
-              className="btn btn-sm"
-              role="listitem"
-              aria-label="surface locator gamma"
-              onClick={() => setLocatorOutput("gamma")}
-            >
-              Open Surface Gamma
-            </button>
+            <div className="surface-locator-item" role="listitem">
+              <button
+                id="surface-locator-alpha"
+                className="btn btn-sm"
+                onClick={() => setLocatorOutput("alpha")}
+              >
+                Open Surface Alpha
+              </button>
+            </div>
+            <div className="surface-locator-item" role="listitem">
+              <button
+                id="surface-locator-beta"
+                className="btn btn-sm"
+                onClick={() => setLocatorOutput("beta")}
+              >
+                Open Surface Beta
+              </button>
+            </div>
+            <div className="surface-locator-item" role="listitem">
+              <button
+                id="surface-locator-gamma"
+                className="btn btn-sm"
+                onClick={() => setLocatorOutput("gamma")}
+              >
+                Open Surface Gamma
+              </button>
+            </div>
           </div>
           <p id="surface-locator-output" className="lab-output">
             {locatorOutput}
@@ -1070,8 +1113,38 @@ function PlaywrightSurfaceLab() {
         <section className="lab-panel" id="surface-shot-panel">
           <h3>Screenshot Surface</h3>
           <div id="surface-screenshot-target" className="surface-shot-target">
-            Screenshot target
+            <div className="surface-shot-block surface-shot-block-red" />
+            <div className="surface-shot-block surface-shot-block-green" />
+            <div className="surface-shot-block surface-shot-block-blue" />
           </div>
+        </section>
+
+        <section className="lab-panel" id="surface-drag-panel">
+          <h3>Drag Surface</h3>
+          <div
+            id="surface-drag-source"
+            className="surface-drag-source"
+            draggable
+            onDragStart={(event) => {
+              event.dataTransfer.setData("text/plain", "surface-drag");
+            }}
+          >
+            Drag me
+          </div>
+          <div
+            id="surface-drop-target"
+            className="surface-drag-target"
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={(event) => {
+              event.preventDefault();
+              setDragOutput(event.dataTransfer.getData("text/plain") || "dropped");
+            }}
+          >
+            Drop target
+          </div>
+          <p id="surface-drag-output" className="lab-output">
+            {dragOutput}
+          </p>
         </section>
       </div>
     </div>

@@ -17,10 +17,13 @@ import {
   type CompatPage,
 } from "./compat";
 import type {
+  ControllerEvent,
   FrameMeta,
   HandleMeta,
   PropertyHandleEntry,
+  RuntimeConsoleRecord,
   SerializedArgument,
+  SerializedErrorValue,
   Snapshot,
 } from "./types";
 
@@ -63,6 +66,68 @@ function isRuntimeHandleReference(value: unknown): value is { __pwRuntimeHandleI
   );
 }
 
+function normalizeBinaryPayload(value: unknown): Uint8Array {
+  if (value instanceof Uint8Array) {
+    return value;
+  }
+  if (value instanceof ArrayBuffer) {
+    return new Uint8Array(value);
+  }
+  if (Array.isArray(value)) {
+    return Uint8Array.from(value.map((entry) => (typeof entry === "number" ? entry : 0)));
+  }
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const data = record.type === "Buffer" ? record.data : record.data;
+    if (Array.isArray(data)) {
+      return Uint8Array.from(data.map((entry) => (typeof entry === "number" ? entry : 0)));
+    }
+    const numericKeys = Object.keys(record)
+      .filter((key) => /^\d+$/.test(key))
+      .map((key) => Number(key))
+      .sort((left, right) => left - right);
+    if (numericKeys.length > 0) {
+      return Uint8Array.from(
+        numericKeys.map((key) => {
+          const next = record[String(key)];
+          return typeof next === "number" ? next : 0;
+        })
+      );
+    }
+    if (typeof record.length === "number") {
+      const length = Math.max(0, Math.floor(record.length));
+      const bytes = new Uint8Array(length);
+      for (let index = 0; index < length; index += 1) {
+        const next = record[String(index)];
+        bytes[index] = typeof next === "number" ? next : 0;
+      }
+      return bytes;
+    }
+  }
+  const objectKeys =
+    value && typeof value === "object" ? Object.keys(value as Record<string, unknown>).join(",") : "";
+  throw new Error(
+    `Expected binary screenshot payload (type=${typeof value}, keys=${objectKeys || "(none)"})`
+  );
+}
+
+function normalizeStringArrayPayload(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.map((entry) => String(entry));
+  }
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const numericKeys = Object.keys(record)
+      .filter((key) => /^\d+$/.test(key))
+      .map((key) => Number(key))
+      .sort((left, right) => left - right);
+    if (numericKeys.length > 0) {
+      return numericKeys.map((key) => String(record[String(key)] ?? ""));
+    }
+  }
+  throw new Error(`Expected string array payload, got ${typeof value}`);
+}
+
 export class ProxyAppController {
   readonly mainFrameId = 1;
   readonly appPort: number;
@@ -83,6 +148,15 @@ export class ProxyAppController {
     title: "",
     viewportSize: { width: 0, height: 0 },
   };
+  private desiredViewportSize: Snapshot["viewportSize"] | null = null;
+  private grantedPermissions = new Set<string>();
+  private geolocation: { latitude: number; longitude: number } | null = null;
+  private eventListeners = new Set<(event: ControllerEvent) => void>();
+  private eventPollingRequested = false;
+  private eventPollingPromise: Promise<void> | null = null;
+  private collectingRuntimeEvents = false;
+  private consoleMessageHistory: RuntimeConsoleRecord[] = [];
+  private pageErrorHistory: SerializedErrorValue[] = [];
   private compatContext: CompatBrowserContext;
   private compatPage: CompatPage;
   private knownFrames = new Map<number, FrameMeta>();
@@ -167,6 +241,9 @@ export class ProxyAppController {
     this.appExitInfo = null;
     this.processLogs = [];
     this.processLogBuffers = { stdout: "", stderr: "" };
+    this.eventPollingRequested = false;
+    this.consoleMessageHistory = [];
+    this.pageErrorHistory = [];
     this.app = spawn(BIN, ["--test-port", String(this.appPort)], {
       cwd: ROOT,
       stdio: ["ignore", "pipe", "pipe"],
@@ -214,12 +291,114 @@ export class ProxyAppController {
     await this.start();
   }
 
+  onEvent(listener: (event: ControllerEvent) => void): void {
+    this.eventListeners.add(listener);
+  }
+
+  offEvent(listener: (event: ControllerEvent) => void): void {
+    this.eventListeners.delete(listener);
+  }
+
+  async setEventPollingRequested(requested: boolean): Promise<void> {
+    this.eventPollingRequested = requested;
+    if (requested) {
+      this.startEventPolling();
+      return;
+    }
+    await this.stopEventPolling();
+  }
+
   private invalidateRuntime(): void {
     this.runtimeInstalled = false;
     this.runtimeInstallPromise = null;
   }
 
+  private emitControllerEvent(event: ControllerEvent): void {
+    if (event.kind === "console") {
+      this.consoleMessageHistory.push(event.message);
+      if (this.consoleMessageHistory.length > 200) {
+        this.consoleMessageHistory.shift();
+      }
+    }
+    if (event.kind === "pageerror") {
+      this.pageErrorHistory.push(event.error);
+      if (this.pageErrorHistory.length > 200) {
+        this.pageErrorHistory.shift();
+      }
+    }
+    for (const listener of this.eventListeners) {
+      listener(event);
+    }
+  }
+
+  private startEventPolling(): void {
+    if (this.eventPollingPromise) {
+      return;
+    }
+    this.eventPollingPromise = (async () => {
+      while (!this.stopped && this.eventPollingRequested) {
+        if (!this.bridge || !this.runtimeInstalled || this.runtimeInstallPromise) {
+          await sleep(50);
+          continue;
+        }
+        try {
+          await this.collectRuntimeEvents();
+        } catch {
+          if (!this.eventPollingRequested || this.stopped) {
+            break;
+          }
+        }
+        await sleep(50);
+      }
+    })();
+  }
+
+  private async stopEventPolling(): Promise<void> {
+    this.eventPollingRequested = false;
+    await this.eventPollingPromise?.catch(() => {});
+    this.eventPollingPromise = null;
+  }
+
+  private async collectRuntimeEvents(): Promise<void> {
+    if (
+      this.collectingRuntimeEvents ||
+      !this.bridge ||
+      !this.runtimeInstalled ||
+      this.runtimeInstallPromise
+    ) {
+      return;
+    }
+    this.collectingRuntimeEvents = true;
+    try {
+      const raw = await this.evalValue(`(() => {
+        if (!window.__pwProxy || typeof window.__pwProxy.takeEvents !== "function") {
+          return [];
+        }
+        return window.__pwProxy.takeEvents();
+      })()`);
+      if (!Array.isArray(raw)) {
+        return;
+      }
+      for (const event of raw) {
+        this.emitControllerEvent(event as ControllerEvent);
+      }
+    } finally {
+      this.collectingRuntimeEvents = false;
+    }
+  }
+
+  async consoleMessages(): Promise<RuntimeConsoleRecord[]> {
+    await this.collectRuntimeEvents();
+    return this.consoleMessageHistory.slice();
+  }
+
+  async pageErrors(): Promise<SerializedErrorValue[]> {
+    await this.collectRuntimeEvents();
+    return this.pageErrorHistory.slice();
+  }
+
   private async shutdownApp(): Promise<void> {
+    await this.stopEventPolling();
     this.invalidateRuntime();
     this.bridge?.close();
     this.bridge = null;
@@ -506,6 +685,19 @@ export class ProxyAppController {
     const installPromise = (async () => {
       await this.evalValue(RUNTIME_BOOTSTRAP);
       this.runtimeInstalled = true;
+      if (this.grantedPermissions.size > 0) {
+        await this.runtimeCall<void>("grantPermissions", {
+          permissions: [...this.grantedPermissions],
+        });
+      }
+      if (this.geolocation) {
+        await this.runtimeCall<void>("setGeolocation", { geolocation: this.geolocation });
+      }
+      if (this.desiredViewportSize) {
+        await this.runtimeCall<void>("setViewportSize", {
+          viewportSize: this.desiredViewportSize,
+        });
+      }
     })();
     this.runtimeInstallPromise = installPromise;
 
@@ -1169,6 +1361,16 @@ export class ProxyAppController {
     return await this.runtimeCall<string>("title", { frameId });
   }
 
+  async pageScreenshot(fullPage: boolean): Promise<Uint8Array> {
+    return normalizeBinaryPayload(await this.runtimeCall<unknown>("screenshotPage", { fullPage }));
+  }
+
+  async elementScreenshot(handleId: number): Promise<Uint8Array> {
+    return normalizeBinaryPayload(
+      await this.runtimeCall<unknown>("screenshotElement", { handleId })
+    );
+  }
+
   async expect(frameId: number, params: ExpectOptions): Promise<unknown> {
     type ExpectationResult = { matches?: boolean; missingReceived?: boolean; received?: unknown };
     type FrameContext = {
@@ -1617,13 +1819,15 @@ export class ProxyAppController {
   ): Promise<string[]> {
     if (selector) {
       if (elements.length === 0) {
-        return await this.runSelectorAction<string[]>(
-          frameId,
-          "selectOption",
-          selector,
-          rootHandleId,
-          strict,
-          { options }
+        return normalizeStringArrayPayload(
+          await this.runSelectorAction<unknown>(
+            frameId,
+            "selectOption",
+            selector,
+            rootHandleId,
+            strict,
+            { options }
+          )
         );
       }
       return await this.withTransientSelectorHandle(
@@ -1636,20 +1840,71 @@ export class ProxyAppController {
       );
     }
     if (handleId !== null) {
-      return await this.runElementAction<string[]>(frameId, handleId, "selectOption", {
-        options,
-        optionElements: elements.map((element) => ({
-          __pwRuntimeHandleId: element.handleId,
-        })),
-      });
+      return normalizeStringArrayPayload(
+        await this.runElementAction<unknown>(frameId, handleId, "selectOption", {
+          options,
+          optionElements: elements.map((element) => ({
+            __pwRuntimeHandleId: element.handleId,
+          })),
+        })
+      );
     }
-    return await this.runtimeCall<string[]>("selectOption", {
+    return normalizeStringArrayPayload(
+      await this.runtimeCall<unknown>("selectOption", {
+        frameId,
+        selector,
+        rootHandleId,
+        handleId,
+        options,
+        optionHandleIds: this.handleIds(elements),
+        strict: !!strict,
+      })
+    );
+  }
+
+  async setInputFiles(
+    selector: string | null,
+    rootHandleId: number | null,
+    handleId: number | null,
+    payloads: Array<{ name: string; mimeType?: string; buffer: Uint8Array }>,
+    strict?: boolean,
+    frameId = 1
+  ): Promise<void> {
+    if (selector) {
+      await this.withTransientSelectorHandle(
+        frameId,
+        selector,
+        rootHandleId,
+        strict,
+        async (handle) =>
+          await this.setInputFiles(null, null, handle.id, payloads, false, frameId)
+      );
+      return;
+    }
+    if (handleId !== null) {
+      await this.runElementAction<void>(frameId, handleId, "setInputFiles", { payloads });
+      return;
+    }
+    await this.runtimeCall<void>("setInputFiles", {
       frameId,
       selector,
       rootHandleId,
       handleId,
-      options,
-      optionHandleIds: this.handleIds(elements),
+      payloads,
+      strict: !!strict,
+    });
+  }
+
+  async dragAndDrop(
+    frameId: number,
+    source: string,
+    target: string,
+    strict?: boolean
+  ): Promise<void> {
+    await this.runtimeCall<void>("dragAndDrop", {
+      frameId,
+      source,
+      target,
       strict: !!strict,
     });
   }
@@ -1680,8 +1935,49 @@ export class ProxyAppController {
     });
   }
 
+  async grantPermissions(permissions: string[]): Promise<void> {
+    this.grantedPermissions = new Set(permissions);
+    if (!this.runtimeInstalled) {
+      return;
+    }
+    await this.runtimeCall<void>("grantPermissions", { permissions });
+  }
+
+  async setGeolocation(
+    geolocation: { latitude: number; longitude: number } | null
+  ): Promise<void> {
+    this.geolocation = geolocation;
+    if (!this.runtimeInstalled) {
+      return;
+    }
+    await this.runtimeCall<void>("setGeolocation", { geolocation });
+  }
+
+  async setViewportSize(viewportSize: Snapshot["viewportSize"]): Promise<void> {
+    this.desiredViewportSize = { ...viewportSize };
+    await this.runtimeCall<void>("setViewportSize", { viewportSize });
+    this.lastSnapshot = {
+      ...this.lastSnapshot,
+      viewportSize: { ...viewportSize },
+    };
+  }
+
+  async dismissDialog(_dialogId: number): Promise<void> {}
+
+  async acceptDialog(_dialogId: number, _promptText?: string): Promise<void> {}
+
   async reload(): Promise<void> {
     await this.restart();
+  }
+
+  async goBack(): Promise<void> {
+    const previousUrl = String(await this.evalValue("location.href"));
+    await this.runtimeCall<void>("goBack");
+    await this.waitFor(async () => {
+      const nextUrl = await this.evalValue("location.href");
+      return typeof nextUrl === "string" && nextUrl !== previousUrl ? nextUrl : null;
+    }, 5_000);
+    await this.snapshot();
   }
 
   async goto(url: string): Promise<void> {

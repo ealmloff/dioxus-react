@@ -1,7 +1,7 @@
 import { test, expect, webkit } from "@playwright/test";
 import { PlaywrightWryProxy } from "./driver/dist/index.mjs";
 
-test.describe.configure({ mode: "default" });
+test.describe.configure({ mode: "parallel" });
 
 /** @type {import("./driver/dist/index.mjs").PlaywrightWryProxy | null} */
 let proxy = null;

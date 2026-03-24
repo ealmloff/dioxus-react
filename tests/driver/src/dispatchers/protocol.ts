@@ -54,6 +54,14 @@ export interface SelectOptionParams extends SelectorParamsWithStrict {
   elements?: Array<{ handleId: number }>;
 }
 
+export interface SetInputFilesParams extends SelectorParamsWithStrict {
+  payloads?: Array<{
+    name: string;
+    mimeType?: string;
+    buffer: Uint8Array;
+  }>;
+}
+
 export interface TimeoutParams {
   timeout?: number;
 }
@@ -87,6 +95,45 @@ export interface ContentParams {
 
 export interface GotoParams {
   url: string;
+}
+
+export interface ViewportSize {
+  width: number;
+  height: number;
+}
+
+export interface SetViewportSizeParams {
+  viewportSize: ViewportSize;
+}
+
+export interface GrantPermissionsParams {
+  permissions: string[];
+  origin?: string;
+}
+
+export interface Geolocation {
+  latitude: number;
+  longitude: number;
+}
+
+export interface SetGeolocationParams {
+  geolocation?: Geolocation;
+}
+
+export interface DragAndDropParams extends SelectorParamsWithStrict {
+  source: string;
+  target: string;
+}
+
+export interface ScreenshotParams {
+  type?: "png" | "jpeg";
+  quality?: number;
+  fullPage?: boolean;
+  omitBackground?: boolean;
+  animations?: "disabled" | "allow";
+  caret?: "hide" | "initial";
+  scale?: "css" | "device";
+  timeout?: number;
 }
 
 export interface ResolveParams {

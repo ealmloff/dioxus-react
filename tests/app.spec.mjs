@@ -1,7 +1,8 @@
+import { inflateSync } from "node:zlib";
 import { test, expect, webkit } from "@playwright/test";
 import { PlaywrightWryProxy } from "./driver/dist/index.mjs";
 
-test.describe.configure({ mode: "default" });
+test.describe.configure({ mode: "parallel" });
 
 /** @type {import("./driver/dist/index.mjs").PlaywrightWryProxy | null} */
 let proxy = null;
@@ -15,6 +16,103 @@ let page = null;
 function currentPage() {
   if (!page) throw new Error("Playwright page not initialized");
   return page;
+}
+
+function decodePng(pngBuffer) {
+  const signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  expect(pngBuffer.subarray(0, 8).equals(signature)).toBe(true);
+
+  let offset = 8;
+  let width = 0;
+  let height = 0;
+  let bitDepth = 0;
+  let colorType = 0;
+  const idatChunks = [];
+
+  while (offset < pngBuffer.length) {
+    const length = pngBuffer.readUInt32BE(offset);
+    offset += 4;
+    const chunkType = pngBuffer.toString("ascii", offset, offset + 4);
+    offset += 4;
+    const chunkData = pngBuffer.subarray(offset, offset + length);
+    offset += length;
+    offset += 4;
+
+    if (chunkType === "IHDR") {
+      width = chunkData.readUInt32BE(0);
+      height = chunkData.readUInt32BE(4);
+      bitDepth = chunkData[8];
+      colorType = chunkData[9];
+    } else if (chunkType === "IDAT") {
+      idatChunks.push(chunkData);
+    } else if (chunkType === "IEND") {
+      break;
+    }
+  }
+
+  expect(bitDepth).toBe(8);
+  expect(colorType).toBe(6);
+
+  const bytesPerPixel = 4;
+  const stride = width * bytesPerPixel;
+  const inflated = inflateSync(Buffer.concat(idatChunks));
+  const pixels = Buffer.alloc(stride * height);
+  let readOffset = 0;
+  let writeOffset = 0;
+  let previousRow = Buffer.alloc(stride);
+
+  const paethPredictor = (left, up, upLeft) => {
+    const prediction = left + up - upLeft;
+    const leftDistance = Math.abs(prediction - left);
+    const upDistance = Math.abs(prediction - up);
+    const upLeftDistance = Math.abs(prediction - upLeft);
+    if (leftDistance <= upDistance && leftDistance <= upLeftDistance) return left;
+    if (upDistance <= upLeftDistance) return up;
+    return upLeft;
+  };
+
+  for (let row = 0; row < height; row += 1) {
+    const filterType = inflated[readOffset];
+    readOffset += 1;
+    const currentRow = Buffer.alloc(stride);
+    for (let index = 0; index < stride; index += 1) {
+      const raw = inflated[readOffset + index];
+      const left = index >= bytesPerPixel ? currentRow[index - bytesPerPixel] : 0;
+      const up = previousRow[index];
+      const upLeft = index >= bytesPerPixel ? previousRow[index - bytesPerPixel] : 0;
+      if (filterType === 0) {
+        currentRow[index] = raw;
+      } else if (filterType === 1) {
+        currentRow[index] = (raw + left) & 0xff;
+      } else if (filterType === 2) {
+        currentRow[index] = (raw + up) & 0xff;
+      } else if (filterType === 3) {
+        currentRow[index] = (raw + Math.floor((left + up) / 2)) & 0xff;
+      } else if (filterType === 4) {
+        currentRow[index] = (raw + paethPredictor(left, up, upLeft)) & 0xff;
+      } else {
+        throw new Error(`Unsupported PNG filter type: ${filterType}`);
+      }
+    }
+    currentRow.copy(pixels, writeOffset);
+    previousRow = currentRow;
+    readOffset += stride;
+    writeOffset += stride;
+  }
+
+  return { width, height, pixels };
+}
+
+function pixelAt(decodedPng, x, y) {
+  const offset = (y * decodedPng.width + x) * 4;
+  return Array.from(decodedPng.pixels.subarray(offset, offset + 4));
+}
+
+function expectPixelClose(actual, expected, tolerance = 8) {
+  expect(actual).toHaveLength(expected.length);
+  for (let index = 0; index < expected.length; index += 1) {
+    expect(Math.abs(actual[index] - expected[index])).toBeLessThanOrEqual(tolerance);
+  }
 }
 
 async function startSession() {
@@ -276,7 +374,25 @@ test("supports network probe requests in the Playwright surface lab", async () =
   );
 });
 
-test.skip("screenshot API: locator().screenshot()", async () => {
+test("emits Playwright request and response events for surface fetch probes", async () => {
+  await clickTab("Playwright Surface Lab");
+  await expect.poll(() => currentPage().textContent("h2")).toBe("Playwright Surface Lab");
+
+  const [request, response, finished] = await Promise.all([
+    currentPage().waitForEvent("request"),
+    currentPage().waitForEvent("response"),
+    currentPage().waitForEvent("requestfinished"),
+    currentPage().click("#surface-network-probe"),
+  ]).then((events) => events.slice(0, 3));
+
+  expect(request.url()).toBe("data:text/plain,surface-network-probe");
+  expect(request.method()).toBe("GET");
+  expect(response.url()).toBe("data:text/plain,surface-network-probe");
+  expect(response.status()).toBe(200);
+  expect(finished.url()).toBe("data:text/plain,surface-network-probe");
+});
+
+test("screenshot API: locator().screenshot()", async () => {
   await clickTab("Playwright Surface Lab");
   await expect.poll(() => currentPage().textContent("h2")).toBe("Playwright Surface Lab");
 
@@ -284,10 +400,15 @@ test.skip("screenshot API: locator().screenshot()", async () => {
     .locator("#surface-screenshot-target")
     .screenshot();
   expect(Buffer.isBuffer(shot)).toBe(true);
-  expect(shot.length).toBeGreaterThan(100);
+  const decoded = decodePng(shot);
+  expect(decoded.width).toBe(320);
+  expect(decoded.height).toBe(120);
+  expectPixelClose(pixelAt(decoded, 52, 60), [239, 68, 68, 255]);
+  expectPixelClose(pixelAt(decoded, 160, 60), [34, 197, 94, 255]);
+  expectPixelClose(pixelAt(decoded, 268, 60), [59, 130, 246, 255]);
 });
 
-test.skip("supports file chooser interactions through setInputFiles", async () => {
+test("supports file chooser interactions through setInputFiles", async () => {
   await clickTab("Playwright Surface Lab");
   await expect.poll(() => currentPage().textContent("h2")).toBe("Playwright Surface Lab");
 
@@ -299,9 +420,9 @@ test.skip("supports file chooser interactions through setInputFiles", async () =
   await expect.poll(() => currentPage().textContent("#surface-file-output")).toBe(
     "surface-upload.txt"
   );
-}, "Current driver does not yet implement setInputFiles");
+});
 
-test.skip("dialog API: page.waitForEvent('dialog')", async () => {
+test("dialog API: page.waitForEvent('dialog')", async () => {
   await clickTab("Playwright Surface Lab");
   await expect.poll(() => currentPage().textContent("h2")).toBe("Playwright Surface Lab");
 
@@ -314,9 +435,9 @@ test.skip("dialog API: page.waitForEvent('dialog')", async () => {
   expect(dialog.message()).toBe("Surface dialog probe");
   await dialog.dismiss();
   await expect.poll(() => currentPage().textContent("#surface-dialog-output")).toBe("dismissed");
-}, "Current driver does not yet implement dialog events");
+});
 
-test.skip("supports hash navigation and back-button history", async () => {
+test("supports hash navigation and back-button history", async () => {
   await clickTab("Playwright Surface Lab");
   await expect.poll(() => currentPage().textContent("h2")).toBe("Playwright Surface Lab");
 
@@ -331,9 +452,9 @@ test.skip("supports hash navigation and back-button history", async () => {
 
   await currentPage().goBack();
   await expect.poll(() => currentPage().evaluate(() => window.location.hash)).toBe("");
-}, "Current driver does not yet implement page.goBack");
+});
 
-test.skip("supports viewport resize reporting", async () => {
+test("supports viewport resize reporting", async () => {
   await clickTab("Playwright Surface Lab");
   await expect.poll(() => currentPage().textContent("h2")).toBe("Playwright Surface Lab");
 
@@ -342,9 +463,9 @@ test.skip("supports viewport resize reporting", async () => {
 
   await currentPage().setViewportSize({ width: 1200, height: 900 });
   await expect.poll(() => currentPage().textContent("#surface-viewport-output")).toBe("1200x900");
-}, "Current driver does not yet implement setViewportSize");
+});
 
-test.skip("geolocation API: context.setGeolocation()", async () => {
+test("geolocation API: context.setGeolocation()", async () => {
   await clickTab("Playwright Surface Lab");
   await expect.poll(() => currentPage().textContent("h2")).toBe("Playwright Surface Lab");
 
@@ -358,7 +479,7 @@ test.skip("geolocation API: context.setGeolocation()", async () => {
     .not.toBe("requesting");
 
   const geo = await currentPage().textContent("#surface-geolocation-output");
-  expect(geo).toMatch(/^(?:-?\d+\.\d{4},-?\d+\.\d{4}|unsupported|denied|error:.*)$/);
+  expect(geo).toBe("37.4219,-122.0840");
 });
 
 test("supports keyboard input sequencing", async () => {
@@ -370,7 +491,35 @@ test("supports keyboard input sequencing", async () => {
   await expect.poll(() => currentPage().textContent("#surface-keyboard-output")).toBe("a,b");
 });
 
-test.skip("supports modern locator queries on surface controls", async () => {
+test("supports console and pageerror events on the surface lab", async () => {
+  await clickTab("Playwright Surface Lab");
+  await expect.poll(() => currentPage().textContent("h2")).toBe("Playwright Surface Lab");
+
+  const [message, pageError] = await Promise.all([
+    Promise.all([
+      currentPage().waitForEvent("console"),
+      currentPage().click("#surface-console-button"),
+    ]).then(([event]) => event),
+    Promise.all([
+      currentPage().waitForEvent("pageerror"),
+      currentPage().click("#surface-pageerror-button"),
+    ]).then(([event]) => event),
+  ]);
+
+  expect(message.type()).toBe("log");
+  expect(message.text()).toContain("surface-console-probe");
+  expect(pageError.message).toContain("surface-page-error");
+});
+
+test("supports drag and drop on the surface lab", async () => {
+  await clickTab("Playwright Surface Lab");
+  await expect.poll(() => currentPage().textContent("h2")).toBe("Playwright Surface Lab");
+
+  await currentPage().dragAndDrop("#surface-drag-source", "#surface-drop-target");
+  await expect.poll(() => currentPage().textContent("#surface-drag-output")).toBe("surface-drag");
+});
+
+test("supports modern locator queries on surface controls", async () => {
   await clickTab("Playwright Surface Lab");
   await expect.poll(() => currentPage().textContent("h2")).toBe("Playwright Surface Lab");
 
@@ -387,7 +536,7 @@ test.skip("supports modern locator queries on surface controls", async () => {
     .toBe(1);
   await currentPage().locator("#surface-locator-gamma").click();
   await expect.poll(() => currentPage().textContent("#surface-locator-output")).toBe("gamma");
-}, "Current driver does not yet support the full modern locator surface");
+});
 
 test("supports waiters and event dispatch", async () => {
   await clickTab("Automation Lab");

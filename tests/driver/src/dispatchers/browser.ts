@@ -4,12 +4,24 @@ import { Dispatcher, type DispatcherLike, serializeResult } from "../internals";
 import { DummyDispatcher, ProxyObject } from "./base";
 import { ProxyHandleDispatcher } from "./handle";
 import type {
+  ControllerEvent,
+  HandleMeta,
+  NameValue,
+  NetworkRequestRecord,
+  NetworkResponseRecord,
+  RequestSizes,
+  SerializedErrorValue,
+} from "../types";
+import type {
   CheckParams,
   ContentParams,
   DispatchPageEventParams,
+  DragAndDropParams,
   EvalParams,
   ExpectParams,
   FillParams,
+  Geolocation,
+  GrantPermissionsParams,
   GetAttributeParams,
   GotoParams,
   HighlightParams,
@@ -18,6 +30,10 @@ import type {
   ResolveParams,
   SelectorEvalParams,
   SelectorParamsWithStrict,
+  ScreenshotParams,
+  SetGeolocationParams,
+  SetInputFilesParams,
+  SetViewportSizeParams,
   TestIdAttributeNameParams,
   TypeParams,
   WaitForTimeoutParams,
@@ -25,6 +41,31 @@ import type {
   WaitSelectorParams,
   SelectOptionParams,
 } from "./protocol";
+
+type ContextSubscriptionEvent =
+  "console"
+  | "dialog"
+  | "request"
+  | "response"
+  | "requestFinished"
+  | "requestFailed";
+
+type PageSubscriptionEvent = ContextSubscriptionEvent | "fileChooser";
+type WaitForEventInfoParams = {
+  info?: {
+    waitId?: string;
+    phase?: string;
+    event?: string;
+  };
+};
+
+declare const Buffer: {
+  from(data: Uint8Array): Uint8Array;
+};
+
+const headerBytes = (headers: NameValue[]): number => {
+  return headers.reduce((total, header) => total + header.name.length + header.value.length + 4, 0);
+};
 
 export class ProxyBrowserDispatcher extends Dispatcher {
   private controller: ProxyAppController;
@@ -54,6 +95,10 @@ export class ProxyBrowserDispatcher extends Dispatcher {
 export class ProxyBrowserContextDispatcher extends Dispatcher {
   private controller: ProxyAppController;
   private page: ProxyPageDispatcher;
+  private subscriptions = new Set<ContextSubscriptionEvent>();
+  private requestDispatchers = new Map<number, ProxyRequestDispatcher>();
+  private responseDispatchers = new Map<number, ProxyResponseDispatcher>();
+  private controllerListener: (event: ControllerEvent) => void;
 
   constructor(parent: DispatcherLike, controller: ProxyAppController) {
     const object = new ProxyObject(parent._object as object, "proxyContext");
@@ -65,17 +110,178 @@ export class ProxyBrowserContextDispatcher extends Dispatcher {
     });
     this.controller = controller;
     this.page = new ProxyPageDispatcher(this, controller);
+    this.controllerListener = (event) => {
+      this.handleControllerEvent(event);
+    };
+    this.controller.onEvent(this.controllerListener);
     this._dispatchEvent("page", { page: this.page });
   }
 
-  async updateSubscription(): Promise<void> {}
+  async updateSubscription(params: { event: ContextSubscriptionEvent; enabled: boolean }): Promise<void> {
+    if (params.enabled) {
+      this.subscriptions.add(params.event);
+    } else {
+      this.subscriptions.delete(params.event);
+    }
+    await this.syncEventPolling();
+  }
 
   async newPage(): Promise<{ page: ProxyPageDispatcher }> {
     return { page: this.page };
   }
 
+  async grantPermissions(params: GrantPermissionsParams): Promise<void> {
+    await this.controller.grantPermissions(params.permissions);
+  }
+
+  async setGeolocation(params: SetGeolocationParams): Promise<void> {
+    const geolocation = params.geolocation
+      ? { latitude: params.geolocation.latitude, longitude: params.geolocation.longitude }
+      : null;
+    await this.controller.setGeolocation(geolocation);
+  }
+
   async setTestIdAttributeName(params: TestIdAttributeNameParams): Promise<void> {
     await this.controller.setTestIdAttributeName(params.testIdAttributeName);
+  }
+
+  async syncEventPolling(): Promise<void> {
+    await this.controller.setEventPollingRequested(
+      this.subscriptions.size > 0 || this.page.needsEventPolling()
+    );
+  }
+
+  private shouldDispatch(event: ContextSubscriptionEvent): boolean {
+    return this.subscriptions.has(event) || this.page.hasSubscription(event);
+  }
+
+  private requestDispatcher(record: NetworkRequestRecord): ProxyRequestDispatcher {
+    const existing = this.requestDispatchers.get(record.id);
+    if (existing) {
+      return existing;
+    }
+    const dispatcher = new ProxyRequestDispatcher(this, this.page.mainFrame(), record);
+    this.requestDispatchers.set(record.id, dispatcher);
+    this.adopt(dispatcher);
+    return dispatcher;
+  }
+
+  private responseDispatcher(
+    requestDispatcher: ProxyRequestDispatcher,
+    responseRecord: NetworkResponseRecord
+  ): ProxyResponseDispatcher {
+    const existing = this.responseDispatchers.get(requestDispatcher.requestId);
+    if (existing) {
+      return existing;
+    }
+    const dispatcher = new ProxyResponseDispatcher(this, requestDispatcher, responseRecord);
+    this.responseDispatchers.set(requestDispatcher.requestId, dispatcher);
+    this.adopt(dispatcher);
+    requestDispatcher.setResponse(dispatcher);
+    return dispatcher;
+  }
+
+  private handleControllerEvent(event: ControllerEvent): void {
+    switch (event.kind) {
+      case "console":
+        if (!this.shouldDispatch("console")) {
+          return;
+        }
+        this._dispatchEvent("console", {
+          type: event.message.type,
+          text: event.message.text,
+          args: [],
+          location: event.message.location,
+          page: this.page,
+          worker: undefined,
+        });
+        return;
+      case "pageerror":
+        this._dispatchEvent("pageError", {
+          error: event.error,
+          page: this.page,
+        });
+        return;
+      case "dialog":
+        if (!this.shouldDispatch("dialog")) {
+          return;
+        }
+        this._dispatchEvent("dialog", {
+          dialog: new ProxyDialogDispatcher(this, this.controller, this.page, event.dialog),
+        });
+        return;
+      case "request":
+        {
+          const request = this.requestDispatcher(event.request);
+          if (!this.shouldDispatch("request")) {
+            return;
+          }
+          this._dispatchEvent("request", {
+            request,
+            page: this.page,
+          });
+        }
+        return;
+      case "response":
+        {
+          const request = this.requestDispatchers.get(event.requestId);
+          if (!request) {
+            return;
+          }
+          const response = this.responseDispatcher(request, event.response);
+          if (!this.shouldDispatch("response")) {
+            return;
+          }
+          this._dispatchEvent("response", {
+            response,
+            page: this.page,
+          });
+        }
+        return;
+      case "requestFinished":
+        {
+          const request = this.requestDispatchers.get(event.requestId);
+          if (!request) {
+            return;
+          }
+          const response = event.response
+            ? this.responseDispatcher(request, event.response)
+            : undefined;
+          if (!this.shouldDispatch("requestFinished")) {
+            return;
+          }
+          this._dispatchEvent("requestFinished", {
+            request,
+            response,
+            responseEndTiming: event.responseEndTiming,
+            page: this.page,
+          });
+        }
+        return;
+      case "requestFailed":
+        if (!this.shouldDispatch("requestFailed")) {
+          return;
+        }
+        {
+          const request = this.requestDispatchers.get(event.requestId);
+          if (!request) {
+            return;
+          }
+          this._dispatchEvent("requestFailed", {
+            request,
+            failureText: event.failureText,
+            responseEndTiming: event.responseEndTiming,
+            page: this.page,
+          });
+        }
+        return;
+      case "filechooser":
+        this.page.handleFileChooser(event.fileChooser.handle, event.fileChooser.isMultiple);
+        return;
+      case "viewport":
+        this.page.handleViewportSizeChanged(event.viewportSize);
+        return;
+    }
   }
 
   async close(): Promise<void> {
@@ -83,6 +289,8 @@ export class ProxyBrowserContextDispatcher extends Dispatcher {
   }
 
   async disposeTree(): Promise<void> {
+    this.controller.offEvent(this.controllerListener);
+    await this.controller.setEventPollingRequested(false);
     this.page._dispatchEvent("close");
     this.page._dispose();
     this._dispatchEvent("close");
@@ -105,10 +313,139 @@ class ProxyAPIRequestContextDispatcher extends DummyDispatcher {
   }
 }
 
+class ProxyDialogDispatcher extends Dispatcher {
+  private controller: ProxyAppController;
+  private dialogId: number;
+
+  constructor(
+    parent: DispatcherLike,
+    controller: ProxyAppController,
+    page: ProxyPageDispatcher,
+    dialog: Extract<ControllerEvent, { kind: "dialog" }>["dialog"],
+  ) {
+    super(parent, new ProxyObject(parent._object as object, "proxyDialog"), "Dialog", {
+      page,
+      type: dialog.type,
+      message: dialog.message,
+      defaultValue: dialog.defaultValue,
+    });
+    this.controller = controller;
+    this.dialogId = dialog.id;
+  }
+
+  async accept(params?: { promptText?: string }): Promise<void> {
+    await this.controller.acceptDialog(this.dialogId, params?.promptText);
+    this._dispose();
+  }
+
+  async dismiss(): Promise<void> {
+    await this.controller.dismissDialog(this.dialogId);
+    this._dispose();
+  }
+}
+
+class ProxyRequestDispatcher extends Dispatcher {
+  readonly requestId: number;
+  private requestRecord: NetworkRequestRecord;
+  private responseDispatcher: ProxyResponseDispatcher | undefined;
+
+  constructor(
+    parent: DispatcherLike,
+    frame: ProxyFrameDispatcher,
+    requestRecord: NetworkRequestRecord,
+  ) {
+    super(parent, new ProxyObject(parent._object as object, "proxyRequest"), "Request", {
+      frame,
+      serviceWorker: undefined,
+      url: requestRecord.url,
+      resourceType: requestRecord.resourceType,
+      method: requestRecord.method,
+      postData: requestRecord.postData,
+      headers: requestRecord.headers,
+      isNavigationRequest: requestRecord.isNavigationRequest,
+      redirectedFrom: undefined,
+      hasResponse: false,
+    });
+    this.requestId = requestRecord.id;
+    this.requestRecord = requestRecord;
+  }
+
+  setResponse(responseDispatcher: ProxyResponseDispatcher): void {
+    this.responseDispatcher = responseDispatcher;
+    this._dispatchEvent("response", {});
+  }
+
+  async rawRequestHeaders(): Promise<{ headers: NameValue[] }> {
+    return { headers: this.requestRecord.headers };
+  }
+
+  async response(): Promise<{ response?: ProxyResponseDispatcher }> {
+    return { response: this.responseDispatcher };
+  }
+
+  requestRecordValue(): NetworkRequestRecord {
+    return this.requestRecord;
+  }
+}
+
+class ProxyResponseDispatcher extends Dispatcher {
+  private requestDispatcher: ProxyRequestDispatcher;
+  private responseRecord: NetworkResponseRecord;
+
+  constructor(
+    parent: DispatcherLike,
+    requestDispatcher: ProxyRequestDispatcher,
+    responseRecord: NetworkResponseRecord,
+  ) {
+    super(parent, new ProxyObject(parent._object as object, "proxyResponse"), "Response", {
+      request: requestDispatcher,
+      url: responseRecord.url,
+      status: responseRecord.status,
+      statusText: responseRecord.statusText,
+      headers: responseRecord.headers,
+      timing: responseRecord.timing,
+      fromServiceWorker: responseRecord.fromServiceWorker,
+    });
+    this.requestDispatcher = requestDispatcher;
+    this.responseRecord = responseRecord;
+  }
+
+  async body(): Promise<{ binary: Uint8Array }> {
+    return { binary: this.responseRecord.body };
+  }
+
+  async securityDetails(): Promise<{ value?: undefined }> {
+    return { value: undefined };
+  }
+
+  async serverAddr(): Promise<{ value?: undefined }> {
+    return { value: undefined };
+  }
+
+  async rawResponseHeaders(): Promise<{ headers: NameValue[] }> {
+    return { headers: this.responseRecord.headers };
+  }
+
+  async sizes(): Promise<{ sizes: RequestSizes }> {
+    const requestRecord = this.requestDispatcher.requestRecordValue();
+    return {
+      sizes: {
+        requestBodySize: requestRecord.postData?.byteLength ?? 0,
+        requestHeadersSize: headerBytes(requestRecord.headers),
+        responseBodySize: this.responseRecord.body.byteLength,
+        responseHeadersSize: headerBytes(this.responseRecord.headers),
+      },
+    };
+  }
+}
+
 class ProxyPageDispatcher extends Dispatcher {
   private controller: ProxyAppController;
   private frames = new Map<number, ProxyFrameDispatcher>();
   private frame: ProxyFrameDispatcher;
+  private subscriptions = new Set<PageSubscriptionEvent>();
+  private eventWaits = new Map<string, string>();
+  private eventWaitCounts = new Map<string, number>();
 
   constructor(parent: DispatcherLike, controller: ProxyAppController) {
     const frame = new ProxyFrameDispatcher(parent, controller, controller.mainFrameId);
@@ -125,6 +462,49 @@ class ProxyPageDispatcher extends Dispatcher {
     this.frames.set(controller.mainFrameId, frame);
   }
 
+  mainFrame(): ProxyFrameDispatcher {
+    return this.frame;
+  }
+
+  hasSubscription(event: ContextSubscriptionEvent): boolean {
+    return this.subscriptions.has(event);
+  }
+
+  needsEventPolling(): boolean {
+    return this.subscriptions.size > 0 || this.eventWaitCounts.size > 0;
+  }
+
+  private contextDispatcher(): ProxyBrowserContextDispatcher {
+    const parent = this.parentScope();
+    if (!parent || parent._type !== "BrowserContext") {
+      throw new Error("Cannot resolve browser context dispatcher");
+    }
+    return parent as unknown as ProxyBrowserContextDispatcher;
+  }
+
+  private adjustEventWait(event: string, delta: 1 | -1): void {
+    const next = (this.eventWaitCounts.get(event) ?? 0) + delta;
+    if (next > 0) {
+      this.eventWaitCounts.set(event, next);
+      return;
+    }
+    this.eventWaitCounts.delete(event);
+  }
+
+  handleFileChooser(meta: HandleMeta, isMultiple: boolean): void {
+    if (!this.subscriptions.has("fileChooser")) {
+      return;
+    }
+    this._dispatchEvent("fileChooser", {
+      element: new ProxyHandleDispatcher(this, this.controller, meta, this.frame),
+      isMultiple,
+    });
+  }
+
+  handleViewportSizeChanged(viewportSize: { width: number; height: number }): void {
+    this._dispatchEvent("viewportSizeChanged", { viewportSize });
+  }
+
   frameForId(frameId: number): ProxyFrameDispatcher {
     const cached = this.frames.get(frameId);
     if (cached) {
@@ -137,12 +517,58 @@ class ProxyPageDispatcher extends Dispatcher {
     return frame;
   }
 
-  async updateSubscription(): Promise<void> {}
+  async updateSubscription(params: { event: PageSubscriptionEvent; enabled: boolean }): Promise<void> {
+    if (params.enabled) {
+      this.subscriptions.add(params.event);
+    } else {
+      this.subscriptions.delete(params.event);
+    }
+    await this.contextDispatcher().syncEventPolling();
+  }
+
+  async waitForEventInfo(params: WaitForEventInfoParams): Promise<void> {
+    const info = params.info;
+    const waitId = info?.waitId;
+    const phase = info?.phase;
+    if (!waitId || !phase) {
+      return;
+    }
+    if (phase === "before") {
+      const event = info.event;
+      if (!event) {
+        return;
+      }
+      this.eventWaits.set(waitId, event);
+      this.adjustEventWait(event, 1);
+      await this.contextDispatcher().syncEventPolling();
+      return;
+    }
+    if (phase === "after") {
+      const event = this.eventWaits.get(waitId);
+      if (!event) {
+        return;
+      }
+      this.eventWaits.delete(waitId);
+      this.adjustEventWait(event, -1);
+      await this.contextDispatcher().syncEventPolling();
+    }
+  }
 
   async reload(): Promise<Record<string, never>> {
     await this.controller.reload();
     await this.frame.refresh();
     return {};
+  }
+
+  async goBack(): Promise<{ response?: undefined }> {
+    await this.controller.goBack();
+    await this.frame.refresh();
+    return { response: undefined };
+  }
+
+  async setViewportSize(params: SetViewportSizeParams): Promise<void> {
+    await this.controller.setViewportSize(params.viewportSize);
+    this.handleViewportSizeChanged(params.viewportSize);
   }
 
   async close(): Promise<void> {
@@ -153,6 +579,39 @@ class ProxyPageDispatcher extends Dispatcher {
 
   async snapshotForAI(): Promise<{ full: string }> {
     return { full: await this.controller.content() };
+  }
+
+  async screenshot(params: ScreenshotParams): Promise<{ binary: Uint8Array }> {
+    return { binary: Buffer.from(await this.controller.pageScreenshot(params.fullPage ?? false)) };
+  }
+
+  async consoleMessages(): Promise<{
+    messages: Array<{
+      type: string;
+      text: string;
+      args: [];
+      location: {
+        url: string;
+        lineNumber: number;
+        columnNumber: number;
+      };
+    }>;
+  }> {
+    const messages = await this.controller.consoleMessages();
+    return {
+      messages: messages.map((message) => ({
+        type: message.type,
+        text: message.text,
+        args: [],
+        location: message.location,
+      })),
+    };
+  }
+
+  async pageErrors(): Promise<{ errors: SerializedErrorValue[] }> {
+    return {
+      errors: await this.controller.pageErrors(),
+    };
   }
 }
 
@@ -354,6 +813,15 @@ class ProxyFrameDispatcher extends Dispatcher {
     await this.controller.tap(params.selector, null, null, params.strict, this.frameId);
   }
 
+  async dragAndDrop(params: DragAndDropParams): Promise<void> {
+    await this.controller.dragAndDrop(
+      this.frameId,
+      params.source,
+      params.target,
+      params.strict
+    );
+  }
+
   async fill(params: FillParams): Promise<void> {
     await this.controller.fill(params.selector, null, null, params.value, params.strict, this.frameId);
   }
@@ -503,6 +971,17 @@ class ProxyFrameDispatcher extends Dispatcher {
         this.frameId
       ),
     };
+  }
+
+  async setInputFiles(params: SelectorParamsWithStrict & SetInputFilesParams): Promise<void> {
+    await this.controller.setInputFiles(
+      params.selector,
+      null,
+      null,
+      params.payloads || [],
+      params.strict,
+      this.frameId
+    );
   }
 
   async type(params: TypeParams): Promise<void> {
