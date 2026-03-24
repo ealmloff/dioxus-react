@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 import { BIN, ROOT, randomPort } from "./constants";
 import { TestBridge } from "./bridge";
-import { TargetClosedError, TimeoutError } from "./internals";
+import { deserializeBridgeValue, TargetClosedError, TimeoutError } from "./internals";
 import { RUNTIME_BOOTSTRAP } from "./runtime";
 import type {
   HandleMeta,
@@ -35,6 +35,11 @@ function isHiddenWaitResult(value: unknown): value is WaitForSelectorHidden {
   return !!value && typeof value === "object" && "hidden" in value;
 }
 
+function titleFromHtml(html: string): string {
+  const match = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  return match ? match[1] : "";
+}
+
 export class ProxyAppController {
   readonly appPort: number;
   private app: any = null;
@@ -61,6 +66,9 @@ export class ProxyAppController {
   }
 
   async start(): Promise<void> {
+    if (process.env.DEBUG) {
+      console.error(`[controller] start appPort=${this.appPort}`);
+    }
     this.stopped = false;
     this.appExitInfo = null;
     this.processLogs = [];
@@ -78,11 +86,23 @@ export class ProxyAppController {
     this.app.stderr?.on("data", (chunk: string) => this.recordProcessOutput("stderr", chunk));
     this.bridge = new TestBridge(this.appPort);
     try {
+      if (process.env.DEBUG) {
+        console.error("[controller] connecting TCP bridge");
+      }
       await this.bridge.connect();
+      if (process.env.DEBUG) {
+        console.error("[controller] TCP bridge connected");
+      }
     } catch (error) {
       throw await this.decorateStartupError(error);
     }
+    if (process.env.DEBUG) {
+      console.error("[controller] waiting for app ready");
+    }
     await this.waitForAppReady();
+    if (process.env.DEBUG) {
+      console.error("[controller] app ready");
+    }
   }
 
   async close(): Promise<void> {
@@ -107,11 +127,17 @@ export class ProxyAppController {
       return;
     }
 
+    const waitForExit = () =>
+      new Promise<boolean>((resolve) => {
+        this.app.once("exit", () => resolve(true));
+      });
+
     this.app.kill("SIGTERM");
-    await Promise.race([
-      new Promise((resolve) => this.app.once("exit", resolve)),
-      sleep(2_000),
-    ]);
+    const exitedGracefully = await Promise.race([waitForExit(), sleep(2_000).then(() => false)]);
+    if (!exitedGracefully) {
+      this.app.kill("SIGKILL");
+      await Promise.race([waitForExit(), sleep(1_000).then(() => false)]);
+    }
     this.app = null;
   }
 
@@ -186,7 +212,7 @@ export class ProxyAppController {
     } catch (error) {
       throw await this.decorateRuntimeError(error);
     }
-    const value = JSON.parse(String(raw));
+    const value = deserializeBridgeValue(JSON.parse(String(raw)));
     if (value && typeof value === "object" && value.__error) {
       const error = new Error(value.__error);
       error.stack = value.__stack || error.stack;
@@ -229,6 +255,9 @@ export class ProxyAppController {
         const header = await this.evalValue(
           `document.querySelector("h1")?.textContent ?? null`
         );
+        if (process.env.DEBUG) {
+          console.error(`[controller] ready probe h1=${JSON.stringify(header)}`);
+        }
         return header === "dioxus-react";
       }, 15_000);
     } catch (error) {
@@ -369,11 +398,11 @@ export class ProxyAppController {
   }
 
   async snapshot(): Promise<Snapshot> {
-    const [url, title, viewportSize] = await Promise.all([
-      this.evalValue("location.href"),
-      this.evalValue("document.title"),
-      this.evalValue("({ width: window.innerWidth, height: window.innerHeight })"),
-    ]);
+    const url = await this.evalValue("location.href");
+    const title = await this.evalValue("document.title");
+    const viewportSize = await this.evalValue(
+      "({ width: window.innerWidth, height: window.innerHeight })"
+    );
 
     this.lastSnapshot = { url, title, viewportSize };
     return this.lastSnapshot;
@@ -595,6 +624,30 @@ export class ProxyAppController {
 
   async content(): Promise<string> {
     return await this.runtimeCall("content");
+  }
+
+  async setContent(html: string): Promise<void> {
+    await this.ensureRuntime();
+    await this.runtimeCall("resetHandles");
+    await this.evalValue(`(() => {
+      const html = ${JSON.stringify(html)};
+      const hasDocumentMarkup = /<!doctype|<html|<head|<body/i.test(html);
+      if (hasDocumentMarkup) {
+        const nextDocument = new DOMParser().parseFromString(html, "text/html");
+        document.head.innerHTML = nextDocument.head.innerHTML;
+        document.body.innerHTML = nextDocument.body.innerHTML;
+        document.title = nextDocument.title;
+      } else {
+        document.body.innerHTML = html;
+        document.title = "";
+      }
+      return null;
+    })()`);
+    await this.ensureRuntime();
+    this.lastSnapshot = {
+      ...this.lastSnapshot,
+      title: titleFromHtml(html),
+    };
   }
 
   async title(): Promise<string> {

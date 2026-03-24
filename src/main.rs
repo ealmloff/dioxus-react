@@ -1,8 +1,8 @@
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
-use wry_launch::{LaunchBuilder, WebViewBuilder};
+use wry_launch::{LaunchBuilder, WebViewBuilder, WindowBuilder};
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Read as _, Write};
 use std::sync::{Arc, Condvar, Mutex};
 
@@ -124,9 +124,9 @@ impl NativeBridge {
 /// via the "test" custom protocol, executes them, and posts results back.
 struct TestBridge {
     /// Queue of JS strings waiting to be executed in the webview.
-    commands: VecDeque<String>,
-    /// Result of the most recently executed command (None = still pending).
-    result: Option<String>,
+    commands: VecDeque<(u64, String)>,
+    /// Completed results keyed by command id.
+    results: HashMap<u64, String>,
 }
 
 fn main() -> wry_launch::wry::Result<()> {
@@ -140,7 +140,7 @@ fn main() -> wry_launch::wry::Result<()> {
         Arc::new((
             Mutex::new(TestBridge {
                 commands: VecDeque::new(),
-                result: None,
+                results: HashMap::new(),
             }),
             Condvar::new(),
         ))
@@ -209,12 +209,14 @@ fn main() -> wry_launch::wry::Result<()> {
         None
     };
 
-    LaunchBuilder::new()
-        .webview(webview)
-        .run(move || async move {
-            setup_app(http_bridge_port);
-            std::future::pending::<()>().await
-        })
+    let mut builder = LaunchBuilder::new().webview(webview);
+    if test_port.is_some() {
+        builder = builder.window(WindowBuilder::new().with_visible(false));
+    }
+    builder.run(move || async move {
+        setup_app(http_bridge_port);
+        std::future::pending::<()>().await
+    })
 }
 
 fn percent_decode(path: &str) -> String {
@@ -243,6 +245,48 @@ fn hex_val(b: u8) -> Option<u8> {
     }
 }
 
+fn read_http_request(stream: &mut std::net::TcpStream) -> Option<(String, String)> {
+    let mut buffer = Vec::new();
+    let mut chunk = [0u8; 4096];
+    let header_end = loop {
+        let n = stream.read(&mut chunk).ok()?;
+        if n == 0 {
+            return None;
+        }
+        buffer.extend_from_slice(&chunk[..n]);
+        if let Some(pos) = buffer.windows(4).position(|window| window == b"\r\n\r\n") {
+            break pos + 4;
+        }
+        if buffer.len() > 1024 * 1024 {
+            return None;
+        }
+    };
+
+    let headers = String::from_utf8_lossy(&buffer[..header_end]).into_owned();
+    let content_length = headers
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            if !name.eq_ignore_ascii_case("content-length") {
+                return None;
+            }
+            value.trim().parse::<usize>().ok()
+        })
+        .unwrap_or(0);
+
+    while buffer.len() < header_end + content_length {
+        let n = stream.read(&mut chunk).ok()?;
+        if n == 0 {
+            break;
+        }
+        buffer.extend_from_slice(&chunk[..n]);
+    }
+
+    let body_end = (header_end + content_length).min(buffer.len());
+    let body = String::from_utf8_lossy(&buffer[header_end..body_end]).into_owned();
+    Some((headers, body))
+}
+
 /// Minimal HTTP/1.1 server for the webview polling bridge.
 ///
 /// The webview polls `GET /poll?result=<prev_result>` to deliver results and
@@ -261,14 +305,12 @@ fn run_http_bridge(listener: std::net::TcpListener, bridge: Arc<(Mutex<TestBridg
 
         // Handle each request synchronously on the listener thread since the
         // webview only sends one request at a time.
-        let mut buf = [0u8; 4096];
-        let n = match stream.read(&mut buf) {
-            Ok(n) if n > 0 => n,
-            _ => continue,
+        let Some((request, body)) = read_http_request(&mut stream) else {
+            continue;
         };
-        let request = String::from_utf8_lossy(&buf[..n]);
 
-        // Extract the query string from "GET /poll?result=... HTTP/1.1"
+        // Extract the path from "POST /poll HTTP/1.1" and accept the previous
+        // eval result in either the request body or the legacy query string.
         let first_line = request.lines().next().unwrap_or("");
         let path = first_line.split_whitespace().nth(1).unwrap_or("/");
         request_count += 1;
@@ -276,22 +318,35 @@ fn run_http_bridge(listener: std::net::TcpListener, bridge: Arc<(Mutex<TestBridg
             eprintln!("[test-bridge] HTTP poll #{request_count}: {path}");
         }
 
-        if let Some(idx) = path.find("?result=") {
+        if let Some(decoded) = if !body.is_empty() {
+            Some(body)
+        } else if let Some(idx) = path.find("?result=") {
             let encoded = &path[idx + 8..];
-            let decoded = percent_decode(encoded);
+            Some(percent_decode(encoded))
+        } else {
+            None
+        } {
             if request_count <= 5 || decoded.contains("__error") {
                 eprintln!("[test-bridge] HTTP result #{request_count}: {decoded}");
             }
-            let (lock, cvar) = &*bridge;
-            let mut state = lock.lock().unwrap();
-            state.result = Some(decoded);
-            cvar.notify_all();
+            if let Ok(posted) = serde_json::from_str::<serde_json::Value>(&decoded) {
+                if let Some(id) = posted.get("id").and_then(|v| v.as_u64()) {
+                    if let Some(result) = posted.get("result") {
+                        let (lock, cvar) = &*bridge;
+                        let mut state = lock.lock().unwrap();
+                        state
+                            .results
+                            .insert(id, serde_json::to_string(result).unwrap_or_else(|_| "null".into()));
+                        cvar.notify_all();
+                    }
+                }
+            }
         }
 
         let (lock, _) = &*bridge;
         let mut state = lock.lock().unwrap();
         let body = match state.commands.pop_front() {
-            Some(cmd) => serde_json::json!({ "cmd": cmd }).to_string(),
+            Some((id, cmd)) => serde_json::json!({ "id": id, "cmd": cmd }).to_string(),
             None => "{}".to_string(),
         };
         drop(state);
@@ -345,19 +400,20 @@ fn run_test_server(port: u16, bridge: Arc<(Mutex<TestBridge>, Condvar)>) {
                         continue;
                     }
                 };
-                if let Some(js) = cmd.get("eval").and_then(|v| v.as_str()) {
+                let id = cmd.get("id").and_then(|v| v.as_u64());
+                if let (Some(id), Some(js)) = (id, cmd.get("eval").and_then(|v| v.as_str())) {
                     let (lock, cvar) = &*bridge;
                     {
                         let mut state = lock.lock().unwrap();
-                        state.result = None;
-                        state.commands.push_back(js.to_string());
+                        state.results.remove(&id);
+                        state.commands.push_back((id, js.to_string()));
                     }
                     let result = {
                         let mut state = lock.lock().unwrap();
                         let timeout = std::time::Duration::from_secs(15);
                         let deadline = std::time::Instant::now() + timeout;
                         loop {
-                            if let Some(r) = state.result.take() {
+                            if let Some(r) = state.results.remove(&id) {
                                 break r;
                             }
                             let remaining =
@@ -369,11 +425,11 @@ fn run_test_server(port: u16, bridge: Arc<(Mutex<TestBridge>, Condvar)>) {
                             state = s;
                         }
                     };
-                    let resp = serde_json::json!({ "result": result }).to_string();
+                    let resp = serde_json::json!({ "id": id, "result": result }).to_string();
                     let _ = writeln!(writer, "{resp}");
                 } else {
                     let err =
-                        serde_json::json!({"error": "expected {\"eval\": \"...\"}"}).to_string();
+                        serde_json::json!({"id": id, "error": "expected {\"id\": n, \"eval\": \"...\"}"}).to_string();
                     let _ = writeln!(writer, "{err}");
                 }
             }
@@ -441,6 +497,97 @@ fn setup_app(http_bridge_port: Option<u16>) {
       }}
     }}
 
+    function serializeBridgeValue(value, visitor) {{
+      var state = visitor || {{
+        lastId: 0,
+        visited: new Map()
+      }};
+
+      if (typeof value === 'symbol' || typeof value === 'function') {{
+        return {{ v: 'undefined' }};
+      }}
+      if (typeof value === 'undefined') {{
+        return {{ v: 'undefined' }};
+      }}
+      if (value === null) {{
+        return {{ v: 'null' }};
+      }}
+      if (Number.isNaN(value)) {{
+        return {{ v: 'NaN' }};
+      }}
+      if (value === Infinity) {{
+        return {{ v: 'Infinity' }};
+      }}
+      if (value === -Infinity) {{
+        return {{ v: '-Infinity' }};
+      }}
+      if (Object.is(value, -0)) {{
+        return {{ v: '-0' }};
+      }}
+      if (typeof value === 'boolean') {{
+        return {{ b: value }};
+      }}
+      if (typeof value === 'number') {{
+        return {{ n: value }};
+      }}
+      if (typeof value === 'string') {{
+        return {{ s: value }};
+      }}
+      if (typeof value === 'bigint') {{
+        return {{ bi: value.toString() }};
+      }}
+      if (value instanceof Date) {{
+        return {{ d: value.toJSON() }};
+      }}
+      if (value instanceof URL) {{
+        return {{ u: value.toJSON() }};
+      }}
+      if (value instanceof RegExp) {{
+        return {{ r: {{ p: value.source, f: value.flags }} }};
+      }}
+      if (value instanceof Error) {{
+        return {{
+          e: {{
+            n: value.name,
+            m: value.message,
+            s: value.stack || ''
+          }}
+        }};
+      }}
+      if (Array.isArray(value)) {{
+        if (state.visited.has(value)) {{
+          return {{ ref: state.visited.get(value) }};
+        }}
+        var arrayId = ++state.lastId;
+        state.visited.set(value, arrayId);
+        return {{
+          a: value.map(function(entry) {{
+            return serializeBridgeValue(entry, state);
+          }}),
+          id: arrayId
+        }};
+      }}
+      if (value && typeof value === 'object') {{
+        if (state.visited.has(value)) {{
+          return {{ ref: state.visited.get(value) }};
+        }}
+        var objectId = ++state.lastId;
+        state.visited.set(value, objectId);
+        var entries = [];
+        Object.keys(value).forEach(function(key) {{
+          entries.push({{
+            k: key,
+            v: serializeBridgeValue(value[key], state)
+          }});
+        }});
+        return {{
+          o: entries,
+          id: objectId
+        }};
+      }}
+      return {{ s: String(value) }};
+    }}
+
     function pushLog(type, argsLike) {{
       var parts = [];
       for (var i = 0; i < argsLike.length; i += 1) {{
@@ -483,33 +630,54 @@ fn setup_app(http_bridge_port: Option<u16>) {
 
     console.log('[test-bridge] polling script starting on port {port}');
     var lastResult = null;
+    function setBridgeResult(id, value) {{
+      lastResult = JSON.stringify({{
+        id: id,
+        result: serializeBridgeValue(value)
+      }});
+      setTimeout(poll, 0);
+    }}
+    function setBridgeError(id, error) {{
+      lastResult = JSON.stringify({{
+        id: id,
+        result: {{
+          __error: error && error.message ? error.message : String(error),
+          __stack: error && error.stack ? error.stack : ''
+        }}
+      }});
+      setTimeout(poll, 0);
+    }}
     function poll() {{
-      var url = 'http://127.0.0.1:{port}/poll' + (lastResult !== null ? '?result=' + encodeURIComponent(lastResult) : '');
+      var url = 'http://127.0.0.1:{port}/poll';
+      var payload = lastResult !== null ? lastResult : '';
       lastResult = null;
       var xhr = new XMLHttpRequest();
-      xhr.open('GET', url, true);
+      xhr.open('POST', url, true);
+      xhr.setRequestHeader('Content-Type', 'text/plain;charset=UTF-8');
       xhr.onload = function() {{
         var data;
-        try {{ data = JSON.parse(xhr.responseText); }} catch(e) {{ data = {{}}; }}
+        try {{
+          data = JSON.parse(xhr.responseText);
+        }} catch(e) {{
+          console.error('[test-bridge] parse failure', xhr.responseText, e);
+          data = {{}};
+        }}
         if (data.cmd) {{
-          var result;
           try {{
-            var value = (0, eval)(data.cmd);
-            result = JSON.stringify(value);
-            if (typeof result === 'undefined') {{
-              result = 'null';
-            }}
+            Promise.resolve((0, eval)(data.cmd)).then(function(value) {{
+              setBridgeResult(data.id, value);
+            }}, function(error) {{
+              setBridgeError(data.id, error);
+            }});
           }} catch (e) {{
-            result = JSON.stringify({{__error: e.message, __stack: e.stack}});
+            setBridgeError(data.id, e);
           }}
-          lastResult = result;
-          setTimeout(poll, 0);
         }} else {{
           setTimeout(poll, 30);
         }}
       }};
       xhr.onerror = function() {{ setTimeout(poll, 100); }};
-      xhr.send();
+      xhr.send(payload);
     }}
     poll();
   }})();

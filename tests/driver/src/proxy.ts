@@ -8,29 +8,35 @@ import {
 import { ProxyPlaywrightDispatcher } from "./dispatchers/browser";
 
 interface ProxyOptions {
-  appPort?: number;
   proxyPort?: number;
 }
 
 export class PlaywrightWryProxy {
-  private controller: ProxyAppController;
   private proxyPort: number;
   private server: any = null;
-  private connections = new Set<any>();
+  private connections = new Map<any, ProxyAppController>();
+  private sockets = new Set<any>();
 
-  constructor({ appPort = randomPort(), proxyPort = DEFAULT_PROXY_PORT }: ProxyOptions = {}) {
+  constructor({ proxyPort = DEFAULT_PROXY_PORT }: ProxyOptions = {}) {
     this.proxyPort = proxyPort;
-    this.controller = new ProxyAppController({ appPort });
   }
 
   async start(): Promise<string> {
-    await this.controller.start();
     this.server = new wsServer({ port: this.proxyPort });
     this.server.on("connection", (socket: any) => {
+      if (process.env.DEBUG) {
+        console.error("[proxy] ws client connected");
+      }
+      this.sockets.add(socket);
+      const controller = new ProxyAppController({ appPort: randomPort() });
       const connection = new DispatcherConnection();
-      this.connections.add(connection);
+      this.connections.set(connection, controller);
+
+      const init = controller.start();
+
       const root = new RootDispatcher(connection, async (scope: any) => {
-        return new ProxyPlaywrightDispatcher(scope, this.controller);
+        await init;
+        return new ProxyPlaywrightDispatcher(scope, controller);
       });
 
       connection.onmessage = (message: unknown) => {
@@ -38,13 +44,19 @@ export class PlaywrightWryProxy {
       };
 
       socket.on("message", async (data: unknown) => {
+        if (process.env.DEBUG) {
+          console.error(`[proxy] ws message ${String(data).slice(0, 200)}`);
+        }
         const message = JSON.parse(String(data));
+        await init;
         await connection.dispatch(message);
       });
 
       socket.on("close", () => {
+        this.sockets.delete(socket);
         this.connections.delete(connection);
         root._dispose();
+        controller.close();
       });
     });
 
@@ -62,16 +74,27 @@ export class PlaywrightWryProxy {
   }
 
   async close(): Promise<void> {
-    for (const connection of this.connections) {
+    for (const [connection] of this.connections) {
       connection.onmessage = () => {};
     }
+    const controllers = [...this.connections.values()];
     this.connections.clear();
+
+    for (const socket of this.sockets) {
+      try {
+        socket.close();
+      } catch {}
+      try {
+        socket.terminate?.();
+      } catch {}
+    }
+    this.sockets.clear();
 
     if (this.server) {
       await new Promise((resolve) => this.server.close(resolve));
       this.server = null;
     }
 
-    await this.controller.close();
+    await Promise.all(controllers.map((c) => c.close()));
   }
 }

@@ -47,13 +47,8 @@
     if (window.NativeBridge) return window.NativeBridge.new();
     throw new Error("Native bridge is not available");
   }
-  var native = null;
-  function getNativeBridge() {
-    if (!native) native = createNativeBridge();
-    return native;
-  }
   function callNative(fn, ...args) {
-    const result = getNativeBridge()[fn](...args);
+    const result = createNativeBridge()[fn](...args);
     if (typeof result === "string") {
       try {
         return JSON.parse(result);
@@ -88,7 +83,7 @@
     const [elapsed, setElapsed] = (0, import_react.useState)(null);
     const calculate = (0, import_react.useCallback)(() => {
       const start = performance.now();
-      const val = getNativeBridge().fibonacci(n);
+      const val = createNativeBridge().fibonacci(n);
       const ms = (performance.now() - start).toFixed(3);
       setResult(val);
       setElapsed(ms);
@@ -345,7 +340,7 @@
     "Automation Lab"
   ];
   function App() {
-    const [tab, setTab] = (0, import_react.useState)(TAB_NAMES[0]);
+    const [tab, setTab] = (0, import_react.useState)("Counter");
     (0, import_react.useEffect)(() => {
       document.title = "dioxus-react";
     }, []);

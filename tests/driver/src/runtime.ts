@@ -173,6 +173,53 @@ export const RUNTIME_BOOTSTRAP = `(() => {
     return Event;
   };
 
+  const keyboardCodeForKey = (key) => {
+    if (key === "Enter")
+      return "Enter";
+    if (key === "Backspace")
+      return "Backspace";
+    if (key === "Tab")
+      return "Tab";
+    if (key === "Escape")
+      return "Escape";
+    if (key === " ")
+      return "Space";
+    if (typeof key === "string" && key.length === 1)
+      return "Key" + key.toUpperCase();
+    return key || "";
+  };
+
+  const keyboardCodePoint = (key, type) => {
+    if (key === "Enter")
+      return 13;
+    if (key === "Backspace")
+      return 8;
+    if (key === "Tab")
+      return 9;
+    if (key === "Escape")
+      return 27;
+    if (key === " ")
+      return 32;
+    if (typeof key === "string" && key.length === 1)
+      return key.charCodeAt(0);
+    return type === "keypress" ? 0 : 0;
+  };
+
+  const enrichKeyboardInit = (type, init) => {
+    const key = init && typeof init.key === "string" ? init.key : "";
+    const codePoint = keyboardCodePoint(key, type);
+    return Object.assign(
+      {
+        key,
+        code: keyboardCodeForKey(key),
+        keyCode: codePoint,
+        charCode: type === "keypress" ? codePoint : 0,
+        which: codePoint,
+      },
+      init || {}
+    );
+  };
+
   const dispatchEvent = (target, type, init) => {
     const EventCtor = eventConstructor(type, init);
     const defaults = {
@@ -180,7 +227,10 @@ export const RUNTIME_BOOTSTRAP = `(() => {
       cancelable: true,
       composed: true,
     };
-    const event = new EventCtor(type, Object.assign(defaults, init || {}));
+    const eventInit = EventCtor === KeyboardEvent
+      ? Object.assign(defaults, enrichKeyboardInit(type, init))
+      : Object.assign(defaults, init || {});
+    const event = new EventCtor(type, eventInit);
     target.dispatchEvent(event);
   };
 
@@ -202,7 +252,7 @@ export const RUNTIME_BOOTSTRAP = `(() => {
   const pressTarget = (target, key) => {
     focusTarget(target);
     dispatchEvent(target, "keydown", { key });
-    if (key.length === 1)
+    if (key.length === 1 || key === "Enter")
       dispatchEvent(target, "keypress", { key });
     if (key === "Backspace") {
       const current = getTextValue(target);
@@ -347,6 +397,12 @@ export const RUNTIME_BOOTSTRAP = `(() => {
 
     queryCount(payload) {
       return getElements(payload.selector, payload.rootHandleId).length;
+    },
+
+    resetHandles() {
+      state.nextHandleId = 1;
+      state.handles.clear();
+      return true;
     },
 
     waitForSelectorStep(payload) {

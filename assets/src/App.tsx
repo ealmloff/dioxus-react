@@ -49,7 +49,7 @@ interface ReadFileResult {
 }
 
 // ---------------------------------------------------------------------------
-// Singleton bridge instance — created once from the wasm-bindgen class.
+// Native bridge factory — the Rust bridge is stateless, so use fresh handles.
 // ---------------------------------------------------------------------------
 
 function createNativeBridge(): INativeBridge {
@@ -57,19 +57,12 @@ function createNativeBridge(): INativeBridge {
   throw new Error("Native bridge is not available");
 }
 
-let native: INativeBridge | null = null;
-
-function getNativeBridge(): INativeBridge {
-  if (!native) native = createNativeBridge();
-  return native;
-}
-
 // ---------------------------------------------------------------------------
 // Helper: call a native Rust function and parse the JSON result
 // ---------------------------------------------------------------------------
 
 function callNative(fn: string, ...args: unknown[]): unknown {
-  const result = (getNativeBridge() as unknown as Record<string, Function>)[fn](...args);
+  const result = (createNativeBridge() as unknown as Record<string, Function>)[fn](...args);
   if (typeof result === "string") {
     try {
       return JSON.parse(result);
@@ -147,7 +140,7 @@ function FibonacciCalc() {
 
   const calculate = useCallback(() => {
     const start = performance.now();
-    const val = getNativeBridge().fibonacci(n);
+    const val = createNativeBridge().fibonacci(n);
     const ms = (performance.now() - start).toFixed(3);
     setResult(val);
     setElapsed(ms);
@@ -588,7 +581,7 @@ const TAB_NAMES = [
 ];
 
 function App() {
-  const [tab, setTab] = useState(TAB_NAMES[0]);
+  const [tab, setTab] = useState("Counter");
 
   useEffect(() => {
     document.title = "dioxus-react";

@@ -52,6 +52,8 @@ export class ProxyBrowserContextDispatcher extends Dispatcher {
     return { page: this.page };
   }
 
+  async setTestIdAttributeName(): Promise<void> {}
+
   async close(): Promise<void> {
     await this.disposeTree();
   }
@@ -110,6 +112,10 @@ class ProxyPageDispatcher extends Dispatcher {
     this._dispatchEvent("close");
     this._dispose();
   }
+
+  async snapshotForAI(): Promise<{ full: string }> {
+    return { full: await this.controller.content() };
+  }
 }
 
 class ProxyFrameDispatcher extends Dispatcher {
@@ -126,14 +132,18 @@ class ProxyFrameDispatcher extends Dispatcher {
     this.controller = controller;
   }
 
-  async refresh(): Promise<void> {
-    const snapshot = await this.controller.snapshot();
+  private emitNavigated(snapshot = this.controller.snapshotState): void {
     this._dispatchEvent("navigated", {
       url: snapshot.url,
       name: "",
       error: undefined,
       newDocument: undefined,
     });
+  }
+
+  async refresh(): Promise<void> {
+    const snapshot = await this.controller.snapshot();
+    this.emitNavigated(snapshot);
   }
 
   async evaluateExpression(params: any): Promise<{ value: unknown }> {
@@ -229,6 +239,11 @@ class ProxyFrameDispatcher extends Dispatcher {
 
   async content(): Promise<{ value: string }> {
     return { value: await this.controller.content() };
+  }
+
+  async setContent(params: any): Promise<void> {
+    await this.controller.setContent(params.html);
+    this.emitNavigated();
   }
 
   async goto(params: any): Promise<Record<string, never>> {

@@ -16,7 +16,7 @@ const {
   DispatcherConnection,
   RootDispatcher,
 } = requirePlaywrightInternal("lib/server/dispatchers/dispatcher.js") as any;
-const { serializeValue } = requirePlaywrightInternal(
+const { parseSerializedValue, serializeValue } = requirePlaywrightInternal(
   "lib/protocol/serializers.js"
 ) as any;
 const { SdkObject } = requirePlaywrightInternal(
@@ -28,6 +28,35 @@ const { TargetClosedError, TimeoutError } = requirePlaywrightInternal(
 
 export function serializeResult(value: unknown): unknown {
   return serializeValue(value, (fallThrough: unknown) => ({ fallThrough }));
+}
+
+export function deserializeBridgeValue(value: unknown): unknown {
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+
+  for (const key of [
+    "ref",
+    "n",
+    "s",
+    "b",
+    "v",
+    "d",
+    "u",
+    "bi",
+    "e",
+    "r",
+    "ta",
+    "a",
+    "o",
+    "h",
+  ]) {
+    if (key in value) {
+      return parseSerializedValue(value, []);
+    }
+  }
+
+  return value;
 }
 
 export {

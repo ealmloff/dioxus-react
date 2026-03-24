@@ -9,7 +9,8 @@ export class TestBridge {
   readonly port: number;
   private socket: any = null;
   private buffer = "";
-  private pending: PendingEntry[] = [];
+  private nextId = 1;
+  private pending = new Map<number, PendingEntry>();
 
   constructor(port: number) {
     this.port = port;
@@ -44,6 +45,9 @@ export class TestBridge {
   }
 
   private onData(chunk: string): void {
+    if (process.env.DEBUG) {
+      console.error(`[bridge] recv ${chunk.slice(0, 200)}`);
+    }
     this.buffer += chunk;
     let newlineIndex = this.buffer.indexOf("\n");
 
@@ -52,17 +56,22 @@ export class TestBridge {
       this.buffer = this.buffer.slice(newlineIndex + 1);
 
       if (line.trim() !== "") {
-        const pending = this.pending.shift();
-        if (pending) {
-          try {
-            const parsed = JSON.parse(line);
-            if (parsed.error) {
-              pending.reject(new Error(parsed.error));
-            } else {
-              pending.resolve(parsed.result);
-            }
-          } catch {
+        try {
+          const parsed = JSON.parse(line);
+          const pending = this.pending.get(parsed.id);
+          if (!pending) {
+            continue;
+          }
+          this.pending.delete(parsed.id);
+          if (parsed.error) {
+            pending.reject(new Error(parsed.error));
+          } else {
+            pending.resolve(parsed.result);
+          }
+        } catch {
+          for (const [id, pending] of this.pending) {
             pending.reject(new Error(`bad response: ${line}`));
+            this.pending.delete(id);
           }
         }
       }
@@ -78,8 +87,12 @@ export class TestBridge {
         return;
       }
 
-      this.pending.push({ resolve, reject });
-      this.socket.write(JSON.stringify({ eval: js }) + "\n");
+      if (process.env.DEBUG) {
+        console.error(`[bridge] send ${js.slice(0, 200)}`);
+      }
+      const id = this.nextId++;
+      this.pending.set(id, { resolve, reject });
+      this.socket.write(JSON.stringify({ id, eval: js }) + "\n");
     });
   }
 
@@ -89,6 +102,10 @@ export class TestBridge {
   }
 
   close(): void {
+    for (const [id, pending] of this.pending) {
+      pending.reject(new Error("bridge closed"));
+      this.pending.delete(id);
+    }
     if (this.socket) {
       this.socket.destroy();
       this.socket = null;

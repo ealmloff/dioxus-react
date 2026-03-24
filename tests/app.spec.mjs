@@ -17,6 +17,26 @@ function currentPage() {
   return page;
 }
 
+async function startSession() {
+  proxy = new PlaywrightWryProxy();
+  const wsEndpoint = await proxy.start();
+  browser = await webkit.connect(wsEndpoint);
+  context = browser.contexts()[0];
+  if (!context) throw new Error("Proxy did not expose a browser context");
+  page = context.pages()[0];
+  if (!page) throw new Error("Proxy did not expose a page");
+  await expect.poll(() => currentPage().textContent("h1")).toBe("dioxus-react");
+}
+
+async function closeSession() {
+  await browser?.close().catch(() => {});
+  await proxy?.close();
+  browser = null;
+  context = null;
+  page = null;
+  proxy = null;
+}
+
 async function clickTab(name) {
   await currentPage().evaluate((tabName) => {
     const tab = Array.from(document.querySelectorAll(".tab")).find(
@@ -27,20 +47,12 @@ async function clickTab(name) {
   }, name);
 }
 
-test.beforeAll(async () => {
-  proxy = new PlaywrightWryProxy();
-  const wsEndpoint = await proxy.start();
-  browser = await webkit.connect(wsEndpoint);
-  context = browser.contexts()[0];
-  if (!context) throw new Error("Proxy did not expose a browser context");
-  page = context.pages()[0];
-  if (!page) throw new Error("Proxy did not expose a page");
-  await expect.poll(() => currentPage().textContent("h1")).toBe("dioxus-react");
+test.beforeEach(async () => {
+  await startSession();
 });
 
-test.afterAll(async () => {
-  await browser?.close().catch(() => {});
-  await proxy?.close();
+test.afterEach(async () => {
+  await closeSession();
 });
 
 test("connects to the real embedded WRY page", async () => {
@@ -200,7 +212,7 @@ test("survives a real page reload", async () => {
 
   await expect.poll(() => currentPage().title()).toBe("dioxus-react");
   await expect.poll(() => currentPage().textContent("h1")).toBe("dioxus-react");
-  await expect.poll(() => currentPage().textContent("h2")).toBe("System Information");
+  await expect.poll(() => currentPage().textContent("h2")).toBe("Counter");
 
   await clickTab("Automation Lab");
   await expect.poll(() => currentPage().inputValue("#lab-text")).toBe("");
