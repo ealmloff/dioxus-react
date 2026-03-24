@@ -1,6 +1,36 @@
 import playwrightInjectedSource from "virtual:driver-playwright-injected-source";
 
-type AnyRecord = Record<string, any>;
+type AnyRecord = Record<string, unknown>
+type MessagePayload = Record<string, unknown>;
+type EventConstructorLike =
+  | typeof Event
+  | typeof KeyboardEvent
+  | typeof MouseEvent
+  | typeof WheelEvent
+  | typeof CustomEvent;
+
+const asNumber = (value: unknown): number | undefined =>
+  typeof value === "number" ? value : undefined;
+
+const asString = (value: unknown): string | undefined =>
+  typeof value === "string" ? value : undefined;
+
+const asObject = (value: unknown): AnyRecord =>
+  value !== null && typeof value === "object" ? (value as AnyRecord) : {};
+
+const asUnknownArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
+
+const asNumberArray = (value: unknown): number[] => {
+  const values = asUnknownArray(value);
+  const result: number[] = [];
+  for (const item of values) {
+    const numeric = asNumber(item);
+    if (numeric !== undefined) {
+      result.push(numeric);
+    }
+  }
+  return result;
+};
 type ElementStateName =
   | "visible"
   | "hidden"
@@ -16,8 +46,8 @@ type InjectedScriptCtor = new (
 
 interface InjectedScriptLike {
   parseSelector(selector: string): unknown;
-  querySelector(selector: unknown, root: Node, strict: boolean): Element | undefined;
-  querySelectorAll(selector: unknown, root: Node): Element[];
+  querySelector(selector: unknown, root: unknown, strict: boolean): Element | undefined;
+  querySelectorAll(selector: unknown, root: unknown): Element[];
   generateSelectorSimple(targetElement: Element, options?: AnyRecord): string;
   highlight(selector: unknown): void;
   elementState(
@@ -36,22 +66,95 @@ declare global {
 export default function installPlaywrightRuntime(version: number): true {
   if (window.__pwProxy && window.__pwProxy.version === version) return true;
 
+  interface FrameRecord {
+    id: number;
+    windowRef: Window;
+    parentId: number | null;
+  }
+
+  interface HandleRecord {
+    value: unknown;
+    frameId: number;
+  }
+
   const state = {
     version,
+
+    deserializeValue(serializedValue: AnyRecord, handleIds: number[] = []) {
+      return deserialize(serializedValue, handleIds);
+    },
     nextHandleId: 1,
-    handles: new Map<number, any>(),
+    nextFrameId: 1,
+    handles: new Map<number, HandleRecord>(),
+    frames: new Map<number, FrameRecord>(),
+    windows: new WeakMap<Window, number>(),
     parsedSelectors: new Map<string, unknown>(),
     testIdAttributeName: "data-testid",
-    injectedScript: null as InjectedScriptLike | null,
+    injectedScripts: new Map<number, InjectedScriptLike>(),
     injectedScriptCtor: null as InjectedScriptCtor | null,
   };
 
-  const resolveHandle = (handleId: number): any => state.handles.get(handleId);
+  const frameIdForWindow = (targetWindow: Window): number => {
+    const cached = state.windows.get(targetWindow);
+    if (cached) {
+      return cached;
+    }
+
+    const id = state.nextFrameId++;
+    let parentId: number | null = null;
+    try {
+      const frameElement = targetWindow.frameElement;
+      if (frameElement instanceof HTMLIFrameElement || frameElement instanceof HTMLFrameElement) {
+        const ownerWindow = frameElement.ownerDocument?.defaultView;
+        if (ownerWindow) {
+          parentId = frameIdForWindow(ownerWindow);
+        }
+      }
+    } catch {
+      parentId = null;
+    }
+
+    state.windows.set(targetWindow, id);
+    state.frames.set(id, { id, windowRef: targetWindow, parentId });
+    return id;
+  };
+
+  const rootFrameId = frameIdForWindow(window);
+
+  const resolveFrame = (frameId: number | null | undefined): FrameRecord => {
+    const record = state.frames.get(frameId ?? rootFrameId);
+    if (!record) {
+      throw new Error(`Frame not found: ${String(frameId)}`);
+    }
+    return record;
+  };
+
+  const resolveFrameWindow = (frameId: number | null | undefined): Window => {
+    return resolveFrame(frameId).windowRef;
+  };
+
+  const resolveFrameDocument = (frameId: number | null | undefined): Document => {
+    return resolveFrameWindow(frameId).document;
+  };
+
+  const inferFrameId = (value: unknown, fallbackFrameId = rootFrameId): number => {
+    if (value instanceof Window) {
+      return frameIdForWindow(value);
+    }
+    if (value instanceof Node) {
+      const ownerWindow = value.ownerDocument?.defaultView;
+      return ownerWindow ? frameIdForWindow(ownerWindow) : fallbackFrameId;
+    }
+    return fallbackFrameId;
+  };
+
+  const resolveHandleRecord = (handleId: number): HandleRecord | undefined => state.handles.get(handleId);
+  const resolveHandle = (handleId: number): unknown => resolveHandleRecord(handleId)?.value;
 
   const resolveRoot = (rootHandleId: number | null | undefined): Node => {
-    if (!rootHandleId) return document;
+    if (!rootHandleId) return resolveFrameDocument(rootFrameId);
     const root = resolveHandle(rootHandleId);
-    if (!root) throw new Error("Root handle not found");
+    if (!root || !(root instanceof Node)) throw new Error("Root handle not found");
     return root;
   };
 
@@ -75,13 +178,16 @@ export default function installPlaywrightRuntime(version: number): true {
     return state.injectedScriptCtor;
   };
 
-  const getInjectedScript = (): InjectedScriptLike => {
-    if (state.injectedScript) return state.injectedScript;
+  const getInjectedScript = (frameId = rootFrameId): InjectedScriptLike => {
+    const cached = state.injectedScripts.get(frameId);
+    if (cached) return cached;
 
     const InjectedScript = loadInjectedScriptCtor();
-    const previousMutationObserver = window.MutationObserver;
+    const targetWindow = resolveFrameWindow(frameId);
+    const targetWindowAny = targetWindow as unknown as AnyRecord;
+    const previousMutationObserver = targetWindowAny.MutationObserver;
     if (typeof previousMutationObserver !== "function") {
-      window.MutationObserver = class {
+      targetWindowAny.MutationObserver = class {
         observe() {}
         disconnect() {}
         takeRecords() {
@@ -90,7 +196,7 @@ export default function installPlaywrightRuntime(version: number): true {
       } as typeof MutationObserver;
     }
     try {
-      state.injectedScript = new InjectedScript(window, {
+      const injectedScript = new InjectedScript(targetWindow as Window & typeof globalThis, {
         isUnderTest: false,
         sdkLanguage: "javascript",
         testIdAttributeName: state.testIdAttributeName,
@@ -99,14 +205,15 @@ export default function installPlaywrightRuntime(version: number): true {
         isUtilityWorld: false,
         customEngines: [],
       });
+      state.injectedScripts.set(frameId, injectedScript);
     } finally {
       if (typeof previousMutationObserver === "function") {
-        window.MutationObserver = previousMutationObserver;
+        targetWindowAny.MutationObserver = previousMutationObserver;
       } else {
-        delete (window as AnyRecord).MutationObserver;
+        delete targetWindowAny.MutationObserver;
       }
     }
-    return state.injectedScript;
+    return state.injectedScripts.get(frameId)!;
   };
 
   const validateSelector = (selector: unknown): string => {
@@ -120,54 +227,64 @@ export default function installPlaywrightRuntime(version: number): true {
     const cached = state.parsedSelectors.get(value);
     if (cached) return cached;
 
-    const parsed = getInjectedScript().parseSelector(value);
+    const parsed = getInjectedScript(rootFrameId).parseSelector(value);
     state.parsedSelectors.set(value, parsed);
     return parsed;
   };
 
   const querySelector = (
     selector: unknown,
+    frameId: number | null | undefined,
     rootHandleId: number | null | undefined,
     strict = false
   ): Element | null => {
-    const root = resolveRoot(rootHandleId);
+    const root = rootHandleId ? resolveRoot(rootHandleId) : resolveFrameDocument(frameId);
     const parsed = parseSelector(selector);
-    return getInjectedScript().querySelector(parsed, root, strict) ?? null;
+    return getInjectedScript(frameId ?? rootFrameId).querySelector(parsed, root, strict) ?? null;
   };
 
   const querySelectorAll = (
     selector: unknown,
+    frameId: number | null | undefined,
     rootHandleId: number | null | undefined
   ): Element[] => {
-    const root = resolveRoot(rootHandleId);
+    const root = rootHandleId ? resolveRoot(rootHandleId) : resolveFrameDocument(frameId);
     const parsed = parseSelector(selector);
-    return getInjectedScript().querySelectorAll(parsed, root);
+    return getInjectedScript(frameId ?? rootFrameId).querySelectorAll(parsed, root);
   };
 
-  const resolveTarget = (payload: AnyRecord): any => {
-    if (payload.handleId) return resolveHandle(payload.handleId);
+  const resolveTarget = (payload: MessagePayload): unknown => {
+    if (typeof payloadNumber(payload, "handleId") === "number") return resolveHandle(payloadNumber(payload, "handleId"));
     if (Object.prototype.hasOwnProperty.call(payload, "selector")) {
-      return querySelector(payload.selector, payload.rootHandleId, !!payload.strict);
+      return querySelector(
+        payload.selector,
+        asNumber(payload.frameId) ?? rootFrameId,
+        asNumber(payloadNumber(payload, "rootHandleId")),
+        payloadBoolean(payload, "strict")
+      );
     }
     return null;
   };
 
-  const requireTarget = (payload: AnyRecord): any => {
+  const requireTarget = (payload: MessagePayload): unknown => {
     const target = resolveTarget(payload);
     if (!target) throw new Error("Target not found");
     return target;
   };
 
   const readElementState = (
-    target: any,
+    target: unknown,
     stateName: ElementStateName
   ): { matches: boolean; received?: string | "error:notconnected"; isRadio?: boolean } => {
-    return getInjectedScript().elementState(target, stateName);
+    if (!(target instanceof Node)) {
+      return { matches: false, received: "error:notconnected" };
+    }
+    return getInjectedScript(inferFrameId(target)).elementState(target, stateName);
   };
 
-  const preview = (value: any): string => {
-    if (value instanceof Element) {
-      return getInjectedScript().previewNode?.(value) ?? `<${value.tagName.toLowerCase()}>`;
+  const preview = (value: unknown): string => {
+      if (value instanceof Element) {
+      return getInjectedScript(inferFrameId(value)).previewNode?.(value) ?? `<${value.tagName.toLowerCase()}>`;
     }
     if (value === null) return "null";
     if (value === undefined) return "undefined";
@@ -180,24 +297,31 @@ export default function installPlaywrightRuntime(version: number): true {
     return "JSHandle@object";
   };
 
-  const createHandle = (value: any) => {
+  const createHandle = (value: unknown, frameId = inferFrameId(value)) => {
     const id = state.nextHandleId++;
-    state.handles.set(id, value);
+    state.handles.set(id, { value, frameId });
     return {
       id,
       type: value instanceof Element ? "element" : "js",
       preview: preview(value),
+      frameId,
     };
   };
 
-  const deserialize = (value: any, handleIds: number[]): any => {
+  const deserialize = (
+    value: unknown,
+    handleIds: number[],
+    refs: Map<number, unknown> = new Map()
+  ): unknown => {
     if (value === null || typeof value !== "object") return value;
-    if ("h" in value) return resolveHandle(handleIds[value.h]);
-    if ("n" in value) return value.n;
-    if ("b" in value) return value.b;
-    if ("s" in value) return value.s;
-    if ("v" in value) {
-      switch (value.v) {
+    const serialized = asObject(value);
+    if (typeof serialized.ref === "number") return refs.get(serialized.ref);
+    if (typeof serialized.h === "number") return resolveHandle(handleIds[serialized.h]);
+    if (Object.prototype.hasOwnProperty.call(serialized, "n")) return serialized.n;
+    if (Object.prototype.hasOwnProperty.call(serialized, "b")) return serialized.b;
+    if (Object.prototype.hasOwnProperty.call(serialized, "s")) return serialized.s;
+    if (typeof serialized.v === "string") {
+      switch (serialized.v) {
         case "null":
           return null;
         case "undefined":
@@ -214,25 +338,107 @@ export default function installPlaywrightRuntime(version: number): true {
           return undefined;
       }
     }
-    if ("d" in value) return new Date(value.d);
-    if ("u" in value) return new URL(value.u);
-    if ("bi" in value) return BigInt(value.bi);
-    if ("r" in value) return new RegExp(value.r.p, value.r.f);
-    if ("a" in value) return value.a.map((entry: any) => deserialize(entry, handleIds));
-    if ("o" in value) {
-      const out: Record<string, any> = {};
-      for (const entry of value.o) out[entry.k] = deserialize(entry.v, handleIds);
+    if (typeof serialized.d === "string" || typeof serialized.d === "number") {
+      return new Date(serialized.d);
+    }
+    if (typeof serialized.u === "string") {
+      return new URL(serialized.u);
+    }
+    if (typeof serialized.bi === "string" || typeof serialized.bi === "number") {
+      return BigInt(String(serialized.bi));
+    }
+    if (serialized.e && typeof serialized.e === "object") {
+      const error = serialized.e as AnyRecord;
+      const message = asString(error.m) ?? "";
+      const exception = new Error(message);
+      const name = asString(error.n);
+      const stack = asString(error.s);
+      if (name) {
+        exception.name = name;
+      }
+      if (stack) {
+        exception.stack = stack;
+      }
+      return exception;
+    }
+    if (serialized.r && typeof serialized.r === "object") {
+      const regexp = serialized.r as AnyRecord;
+      const pattern = asString(regexp.p) ?? "";
+      const flags = asString(regexp.f) ?? "";
+      return new RegExp(pattern, flags);
+    }
+    if (serialized.ta && typeof serialized.ta === "object") {
+      const ta = serialized.ta as AnyRecord;
+      const bytesValue = ta.b as { data?: unknown } | null | undefined;
+      if (!bytesValue) {
+        return new Uint8Array();
+      }
+      const byteValues = asUnknownArray(bytesValue.data ?? bytesValue).map((value) =>
+        typeof value === "number" ? value : 0
+      );
+      const bytes = Uint8Array.from(byteValues as number[]);
+      const kind = asString(ta.k);
+      if (kind) {
+        switch (kind) {
+          case "i8":
+            return new Int8Array(bytes.buffer);
+          case "ui8":
+            return new Uint8Array(bytes.buffer);
+          case "ui8c":
+            return new Uint8ClampedArray(bytes.buffer);
+          case "i16":
+            return new Int16Array(bytes.buffer);
+          case "ui16":
+            return new Uint16Array(bytes.buffer);
+          case "i32":
+            return new Int32Array(bytes.buffer);
+          case "ui32":
+            return new Uint32Array(bytes.buffer);
+          case "f32":
+            return new Float32Array(bytes.buffer);
+          case "f64":
+            return new Float64Array(bytes.buffer);
+          case "bi64":
+            return new BigInt64Array(bytes.buffer);
+          case "bui64":
+            return new BigUint64Array(bytes.buffer);
+          default:
+            return bytes;
+        }
+      }
+      return bytes;
+    }
+    if (Array.isArray(serialized.a)) {
+      const out: unknown[] = [];
+      refs.set(asNumber(serialized.id) ?? -1, out);
+      for (const entry of serialized.a) {
+        out.push(deserialize(entry, handleIds, refs));
+      }
+      return out;
+    }
+    if (Array.isArray(serialized.o)) {
+      const out: Record<string, unknown> = {};
+      refs.set(asNumber(serialized.id) ?? -1, out);
+      for (const entry of serialized.o) {
+        const item = entry as { k?: string; v?: unknown };
+        if (typeof item.k === "string") {
+          out[item.k] = deserialize(item.v, handleIds, refs);
+        }
+      }
       return out;
     }
     return value;
   };
 
-  const focusTarget = (target: any): void => {
-    if (!target || typeof target.focus !== "function") throw new Error("Target is not focusable");
-    target.focus();
+  const focusTarget = (target: unknown): void => {
+    const targetObject = asObject(target);
+    if (!target || typeof targetObject.focus !== "function") {
+      throw new Error("Target is not focusable");
+    }
+    targetObject.focus();
   };
 
-  const setNativeValue = (target: any, value: string): void => {
+  const setNativeValue = (target: unknown, value: string): void => {
     if (target instanceof HTMLInputElement) {
       const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
       descriptor?.set?.call(target, value);
@@ -243,24 +449,25 @@ export default function installPlaywrightRuntime(version: number): true {
       descriptor?.set?.call(target, value);
       return;
     }
-    if (target && target.isContentEditable) {
-      target.textContent = value;
+    const targetObject = asObject(target);
+    if (targetObject.isContentEditable) {
+      targetObject.textContent = value;
       return;
     }
     throw new Error("Target does not support textual value");
   };
 
-  const scrollIntoViewIfNeeded = (target: any): void => {
+  const scrollIntoViewIfNeeded = (target: unknown): void => {
     if (!(target instanceof Element)) throw new Error("Target is not an element");
-    const targetAsAny = target as AnyRecord;
+    const targetAsAny = target as { scrollIntoViewIfNeeded?: () => void };
     if (typeof targetAsAny.scrollIntoViewIfNeeded === "function") {
-      targetAsAny.scrollIntoViewIfNeeded(false);
+      targetAsAny.scrollIntoViewIfNeeded();
       return;
     }
     target.scrollIntoView();
   };
 
-  const getTextValue = (target: any): string => {
+  const getTextValue = (target: unknown): string => {
     if (
       target instanceof HTMLInputElement ||
       target instanceof HTMLTextAreaElement ||
@@ -268,11 +475,12 @@ export default function installPlaywrightRuntime(version: number): true {
     ) {
       return target.value;
     }
-    if (target && target.isContentEditable) return target.textContent || "";
+    const targetObject = asObject(target);
+    if (targetObject.isContentEditable) return (targetObject.textContent as string) || "";
     return "";
   };
 
-  const eventConstructor = (type: string, init: any): any => {
+  const eventConstructor = (type: string, init: unknown): EventConstructorLike => {
     if (
       type === "click" ||
       type === "dblclick" ||
@@ -312,8 +520,8 @@ export default function installPlaywrightRuntime(version: number): true {
     return 0;
   };
 
-  const enrichKeyboardInit = (type: string, init: any): AnyRecord => {
-    const key = init && typeof init.key === "string" ? init.key : "";
+  const enrichKeyboardInit = (type: string, init: unknown): AnyRecord => {
+    const key = asString((init as AnyRecord).key) ?? "";
     const codePoint = keyboardCodePoint(key);
     return Object.assign(
       {
@@ -323,26 +531,29 @@ export default function installPlaywrightRuntime(version: number): true {
         charCode: type === "keypress" ? codePoint : 0,
         which: codePoint,
       },
-      init || {}
+      asObject(init) || {}
     );
   };
 
-  const dispatchSyntheticEvent = (target: any, type: string, init: any): void => {
+  const dispatchSyntheticEvent = (target: unknown, type: string, init: unknown): void => {
     const EventCtor = eventConstructor(type, init);
     const defaults = {
       bubbles: true,
       cancelable: true,
       composed: true,
     };
+    const targetRecord = asObject(target) as { dispatchEvent?: (event: Event) => void };
     const eventInit =
       EventCtor === KeyboardEvent
         ? Object.assign(defaults, enrichKeyboardInit(type, init))
-        : Object.assign(defaults, init || {});
-    const event = new EventCtor(type, eventInit);
-    target.dispatchEvent(event);
+        : Object.assign(defaults, asObject(init));
+    const event = new EventCtor(type, eventInit as EventInit);
+    if (typeof targetRecord.dispatchEvent === "function") {
+      targetRecord.dispatchEvent(event);
+    }
   };
 
-  const typeIntoTarget = (target: any, text: string): string => {
+  const typeIntoTarget = (target: unknown, text: string): string => {
     focusTarget(target);
     let current = getTextValue(target);
     for (const char of text) {
@@ -357,7 +568,7 @@ export default function installPlaywrightRuntime(version: number): true {
     return current;
   };
 
-  const pressTarget = (target: any, key: string): string => {
+  const pressTarget = (target: unknown, key: string): string => {
     focusTarget(target);
     dispatchSyntheticEvent(target, "keydown", { key });
     if (key.length === 1 || key === "Enter") dispatchSyntheticEvent(target, "keypress", { key });
@@ -371,109 +582,228 @@ export default function installPlaywrightRuntime(version: number): true {
     return getTextValue(target);
   };
 
-  const matchesOption = (option: any, spec: any): boolean => {
-    if (!spec) return false;
-    if (spec.valueOrLabel !== undefined) {
-      return option.value === spec.valueOrLabel || option.label === spec.valueOrLabel;
+  const selectOptionsOnTarget = (target: unknown, payload: AnyRecord): string[] => {
+    if (!(target instanceof HTMLSelectElement)) {
+      throw new Error("Target is not a select element");
     }
-    if (spec.value !== undefined && option.value !== spec.value) return false;
-    if (spec.label !== undefined && option.label !== spec.label) return false;
-    if (spec.index !== undefined) {
-      const options = Array.from(option.parentElement?.options ?? []);
-      if (options.indexOf(option) !== spec.index) return false;
+
+    let selectedOptions: HTMLOptionElement[] = [];
+    const optionElements = asUnknownArray(payload.optionElements).filter(
+      (value: unknown): value is HTMLOptionElement => value instanceof HTMLOptionElement
+    );
+    if (optionElements.length) {
+      selectedOptions = optionElements;
+    } else {
+      const specs = asUnknownArray(payload.options);
+      if (!specs.length) {
+        selectedOptions = [];
+      } else {
+        selectedOptions = Array.from(target.options).filter((option) =>
+          specs.some((spec: unknown) => matchesOption(option, spec))
+        );
+      }
+    }
+
+    if (!target.multiple && selectedOptions.length > 1) {
+      selectedOptions = selectedOptions.slice(0, 1);
+    }
+
+    for (const option of Array.from(target.options)) {
+      option.selected = selectedOptions.includes(option);
+    }
+
+    dispatchSyntheticEvent(target, "input", {});
+    dispatchSyntheticEvent(target, "change", {});
+
+    return Array.from(target.selectedOptions).map((option) => option.value);
+  };
+
+  const runElementAction = (target: unknown, action: string, payload: AnyRecord): unknown => {
+    switch (action) {
+      case "fill":
+        focusTarget(target);
+        setNativeValue(target, asString(payload.value) ?? "");
+        dispatchSyntheticEvent(target, "input", {});
+        dispatchSyntheticEvent(target, "change", {});
+        return null;
+      case "type":
+        return typeIntoTarget(target, asString(payload.text) ?? "");
+      case "press":
+        return pressTarget(target, asString(payload.key) ?? "");
+      case "selectOption":
+        return selectOptionsOnTarget(target, payload);
+      default:
+        throw new Error(`Unsupported action: ${action}`);
+    }
+  };
+
+  const matchesOption = (option: unknown, spec: unknown): boolean => {
+    if (!spec) return false;
+    const optionRecord = asObject(option) as {
+      value?: string;
+      label?: string;
+      parentElement?: { options?: unknown };
+    };
+    const specRecord = asObject(spec);
+    if (specRecord.valueOrLabel !== undefined) {
+      return optionRecord.value === specRecord.valueOrLabel || optionRecord.label === specRecord.valueOrLabel;
+    }
+    if (specRecord.value !== undefined && optionRecord.value !== specRecord.value) return false;
+    if (specRecord.label !== undefined && optionRecord.label !== specRecord.label) return false;
+    if (specRecord.index !== undefined) {
+      const options = asUnknownArray(optionRecord.parentElement?.options);
+      const expectedIndex = asNumber(specRecord.index);
+      if (expectedIndex !== undefined && options.indexOf(option) !== expectedIndex) return false;
     }
     return true;
   };
 
   const executeExpression = (
-    expression: string,
-    isFunction: boolean,
-    argValue: any,
-    handleIds: number[],
-    firstArg: any
-  ): any => {
-    const arg = deserialize(argValue, handleIds);
-    if (!isFunction) return (0, eval)(expression);
-    const fn = (0, eval)(expression);
-    if (firstArg === undefined) return fn(arg);
-    return fn(firstArg, arg);
+    frameId: unknown,
+    expression: unknown,
+    isFunction: unknown,
+    argValue: unknown,
+    handleIds: unknown,
+    firstArg: unknown
+  ): unknown => {
+    const targetWindow = resolveFrameWindow(asNumber(frameId) ?? rootFrameId);
+    const arg = deserialize(argValue, asNumberArray(handleIds));
+    const windowRecord = asObject(targetWindow);
+    const evalInTarget = windowRecord.eval as ((code: string) => unknown) | undefined;
+    if (!evalInTarget) {
+      throw new Error("Window eval function is not available");
+    }
+    const expressionCode = asString(expression) ?? "";
+    const shouldCall = isFunction === true;
+
+    if (!shouldCall) {
+      return evalInTarget(expressionCode);
+    }
+    const fn = evalInTarget(expressionCode) as
+      | ((arg: unknown) => unknown)
+      | ((firstArg: unknown, arg: unknown) => unknown);
+    if (typeof fn !== "function") return undefined;
+    if (firstArg === undefined) return (fn as (arg: unknown) => unknown)(arg);
+    return (fn as (firstArg: unknown, arg: unknown) => unknown)(firstArg, arg);
   };
+
+  const frameMeta = (frameId: number) => {
+    const record = resolveFrame(frameId);
+    let url = "about:blank";
+    let name = "";
+    try {
+      url = record.windowRef.location.href;
+      name = record.windowRef.name || "";
+    } catch (error) {
+      if (process.env.DEBUG) {
+        void error;
+      }
+    }
+    return {
+      id: frameId,
+      url,
+      name,
+      parentFrameId: record.parentId,
+    };
+  };
+
+  const payloadNumber = (payload: MessagePayload, key: string): number | undefined =>
+    typeof payload[key] === "number" ? (payload[key] as number) : undefined;
+  const payloadString = (payload: MessagePayload, key: string): string | undefined =>
+    typeof payload[key] === "string" ? (payload[key] as string) : undefined;
+const payloadBoolean = (payload: MessagePayload, key: string): boolean =>
+  typeof payload[key] === "boolean" && (payload[key] as boolean);
+const payloadArray = (payload: MessagePayload, key: string): unknown[] =>
+  asUnknownArray(payload[key]);
 
   const proxy: AnyRecord = {
     version,
+    deserializeValue: state.deserializeValue,
+    runElementAction,
 
-    evaluate(payload: AnyRecord) {
+    evaluate(payload: MessagePayload) {
       return executeExpression(
+        payloadNumber(payload, "frameId") ?? rootFrameId,
         payload.expression,
         payload.isFunction,
         payload.argValue,
-        payload.handleIds || [],
+        payloadArray(payload, "handleIds") || [],
         undefined
       );
     },
 
-    evaluateHandle(payload: AnyRecord) {
+    evaluateHandle(payload: MessagePayload) {
       return createHandle(
         executeExpression(
+          payloadNumber(payload, "frameId") ?? rootFrameId,
           payload.expression,
           payload.isFunction,
           payload.argValue,
-          payload.handleIds || [],
+          payloadArray(payload, "handleIds") || [],
           undefined
-        )
+        ),
+        payloadNumber(payload, "frameId") ?? rootFrameId
       );
     },
 
-    evaluateOnHandle(payload: AnyRecord) {
+    evaluateOnHandle(payload: MessagePayload) {
+      const handleRecord = resolveHandleRecord(payloadNumber(payload, "handleId"));
       return executeExpression(
+        handleRecord?.frameId ?? payloadNumber(payload, "frameId") ?? rootFrameId,
         payload.expression,
         payload.isFunction,
         payload.argValue,
-        payload.handleIds || [],
-        resolveHandle(payload.handleId)
+        payloadArray(payload, "handleIds") || [],
+        handleRecord?.value
       );
     },
 
-    evaluateHandleOnHandle(payload: AnyRecord) {
+    evaluateHandleOnHandle(payload: MessagePayload) {
+      const handleRecord = resolveHandleRecord(payloadNumber(payload, "handleId"));
       return createHandle(
         executeExpression(
+          handleRecord?.frameId ?? payloadNumber(payload, "frameId") ?? rootFrameId,
           payload.expression,
           payload.isFunction,
           payload.argValue,
-          payload.handleIds || [],
-          resolveHandle(payload.handleId)
-        )
+          payloadArray(payload, "handleIds") || [],
+          handleRecord?.value
+        ),
+        handleRecord?.frameId ?? payloadNumber(payload, "frameId") ?? rootFrameId
       );
     },
 
-    waitForFunctionStep(payload: AnyRecord) {
+    waitForFunctionStep(payload: MessagePayload) {
       const value = executeExpression(
+        payloadNumber(payload, "frameId") ?? rootFrameId,
         payload.expression,
         payload.isFunction,
         payload.argValue,
-        payload.handleIds || [],
+        payloadArray(payload, "handleIds") || [],
         undefined
       );
       if (!value) return null;
       return createHandle(value);
     },
 
-    disposeHandle(payload: AnyRecord) {
-      state.handles.delete(payload.handleId);
+    disposeHandle(payload: MessagePayload) {
+      state.handles.delete(payloadNumber(payload, "handleId"));
       return null;
     },
 
-    jsonValue(payload: AnyRecord) {
-      return resolveHandle(payload.handleId);
+    jsonValue(payload: MessagePayload) {
+      return resolveHandle(payloadNumber(payload, "handleId"));
     },
 
-    getProperty(payload: AnyRecord) {
-      const target = resolveHandle(payload.handleId);
-      return createHandle(target ? target[payload.name] : undefined);
+    getProperty(payload: MessagePayload) {
+      const target = resolveHandle(payloadNumber(payload, "handleId"));
+      const targetRecord = target as { [key: string]: unknown };
+      const name = payloadString(payload, "name");
+      return createHandle(target && name ? targetRecord[name] : undefined);
     },
 
-    getPropertyList(payload: AnyRecord) {
-      const target = resolveHandle(payload.handleId);
+    getPropertyList(payload: MessagePayload) {
+      const target = resolveHandle(payloadNumber(payload, "handleId"));
       const properties: Array<{ name: string; handle: ReturnType<typeof createHandle> }> = [];
       if (!target || (typeof target !== "object" && typeof target !== "function")) {
         return properties;
@@ -482,34 +812,45 @@ export default function installPlaywrightRuntime(version: number): true {
       return properties;
     },
 
-    querySelector(payload: AnyRecord) {
-      const element = querySelector(payload.selector, payload.rootHandleId, !!payload.strict);
-      return element ? createHandle(element) : null;
+    querySelector(payload: MessagePayload) {
+      const element = querySelector(
+        payload.selector,
+        payloadNumber(payload, "frameId") ?? rootFrameId,
+        payloadNumber(payload, "rootHandleId"),
+        payloadBoolean(payload, "strict")
+      );
+      return element ? createHandle(element, inferFrameId(element, payloadNumber(payload, "frameId") ?? rootFrameId)) : null;
     },
 
-    querySelectorAll(payload: AnyRecord) {
-      return querySelectorAll(payload.selector, payload.rootHandleId).map((element) =>
-        createHandle(element)
+    querySelectorAll(payload: MessagePayload) {
+      return querySelectorAll(payload.selector, payloadNumber(payload, "frameId") ?? rootFrameId, payloadNumber(payload, "rootHandleId")).map((element) =>
+        createHandle(element, inferFrameId(element, payloadNumber(payload, "frameId") ?? rootFrameId))
       );
     },
 
-    queryCount(payload: AnyRecord) {
-      return querySelectorAll(payload.selector, payload.rootHandleId).length;
+    queryCount(payload: MessagePayload) {
+      return querySelectorAll(payload.selector, payloadNumber(payload, "frameId") ?? rootFrameId, payloadNumber(payload, "rootHandleId")).length;
     },
 
-    resolveSelector(payload: AnyRecord) {
-      const element = querySelector(payload.selector, payload.rootHandleId, !!payload.strict);
+    resolveSelector(payload: MessagePayload) {
+      const frameId = payloadNumber(payload, "frameId") ?? rootFrameId;
+      const element = querySelector(
+        payload.selector,
+        frameId,
+        payloadNumber(payload, "rootHandleId"),
+        payloadBoolean(payload, "strict")
+      );
       if (!element) throw new Error("No element matching " + payload.selector);
-      const resolvedSelector = getInjectedScript().generateSelectorSimple(element);
+      const resolvedSelector = getInjectedScript(frameId).generateSelectorSimple(element);
       if (!resolvedSelector) {
         throw new Error("Unable to generate locator for " + payload.selector);
       }
       return { resolvedSelector };
     },
 
-    highlight(payload: AnyRecord) {
+    highlight(payload: MessagePayload) {
       const parsed = parseSelector(payload.selector);
-      getInjectedScript().highlight(parsed);
+      getInjectedScript(payloadNumber(payload, "frameId") ?? rootFrameId).highlight(parsed);
       return null;
     },
 
@@ -519,19 +860,78 @@ export default function installPlaywrightRuntime(version: number): true {
       return true;
     },
 
-    setTestIdAttributeName(payload: AnyRecord) {
+    frameInfo(payload: MessagePayload) {
+      return frameMeta(payloadNumber(payload, "frameId") ?? rootFrameId);
+    },
+
+    injectedScriptHandle(payload: MessagePayload) {
+      const frameId = payloadNumber(payload, "frameId") ?? rootFrameId;
+      return createHandle(getInjectedScript(frameId), frameId);
+    },
+
+    getContentFrame(payload: MessagePayload) {
+      const target = resolveHandle(payloadNumber(payload, "handleId"));
+      if (!(target instanceof HTMLIFrameElement || target instanceof HTMLFrameElement)) {
+        return null;
+      }
+      const contentWindow = target.contentWindow;
+      if (!contentWindow) {
+        return null;
+      }
+      return frameMeta(frameIdForWindow(contentWindow));
+    },
+
+    getOwnerFrame(payload: MessagePayload) {
+      const handle = resolveHandleRecord(payloadNumber(payload, "handleId"));
+      if (!handle) {
+        return null;
+      }
+      return frameMeta(handle.frameId);
+    },
+
+    getInjectedScriptHandle(payload: MessagePayload) {
+      const frameId = payloadNumber(payload, "frameId") ?? rootFrameId;
+      return createHandle(getInjectedScript(frameId), frameId);
+    },
+
+    cloneHandle(payload: MessagePayload) {
+      const handle = resolveHandleRecord(payloadNumber(payload, "handleId"));
+      if (!handle) {
+        throw new Error(`Handle not found: ${String(payloadNumber(payload, "handleId"))}`);
+      }
+      return createHandle(handle.value, handle.frameId);
+    },
+
+    generateSelector(payload: MessagePayload) {
+      const handle = resolveHandleRecord(payloadNumber(payload, "handleId"));
+      if (!handle || !(handle.value instanceof Element)) {
+        throw new Error("Target is not an element");
+      }
+      const selector = getInjectedScript(handle.frameId).generateSelectorSimple(handle.value);
+      if (!selector) {
+        throw new Error("Unable to generate selector");
+      }
+      return selector;
+    },
+
+    setTestIdAttributeName(payload: MessagePayload) {
       if (typeof payload.testIdAttributeName !== "string" || !payload.testIdAttributeName) {
         throw new Error("testIdAttributeName must be a non-empty string");
       }
       state.testIdAttributeName = payload.testIdAttributeName;
-      state.injectedScript = null;
+      state.injectedScripts.clear();
       state.parsedSelectors.clear();
       return null;
     },
 
-    waitForSelectorStep(payload: AnyRecord) {
-      const element = querySelector(payload.selector, payload.rootHandleId, !!payload.strict);
-      const stateName = payload.state || "visible";
+    waitForSelectorStep(payload: MessagePayload) {
+      const element = querySelector(
+        payload.selector,
+        payloadNumber(payload, "frameId") ?? rootFrameId,
+        payloadNumber(payload, "rootHandleId"),
+        payloadBoolean(payload, "strict")
+      );
+      const stateName = payloadString(payload, "state") ?? "visible";
       if (stateName === "attached") return element ? createHandle(element) : null;
       if (stateName === "detached") return !element ? { hidden: true } : null;
       if (!element) return stateName === "hidden" ? { hidden: true } : null;
@@ -550,208 +950,191 @@ export default function installPlaywrightRuntime(version: number): true {
       throw new Error("Unsupported waitForSelector state: " + stateName);
     },
 
-    evalOnSelector(payload: AnyRecord) {
-      const element = querySelector(payload.selector, payload.rootHandleId, !!payload.strict);
+    evalOnSelector(payload: MessagePayload) {
+      const frameId = payloadNumber(payload, "frameId") ?? rootFrameId;
+      const element = querySelector(payload.selector, frameId, payloadNumber(payload, "rootHandleId"), payloadBoolean(payload, "strict"));
       if (!element) {
         throw new Error(`Failed to find element matching selector "${payload.selector}"`);
       }
       return executeExpression(
+        inferFrameId(element, frameId),
         payload.expression,
         payload.isFunction,
         payload.argValue,
-        payload.handleIds || [],
+        payloadArray(payload, "handleIds") || [],
         element
       );
     },
 
-    evalOnSelectorAll(payload: AnyRecord) {
-      const elements = querySelectorAll(payload.selector, payload.rootHandleId);
+    evalOnSelectorAll(payload: MessagePayload) {
+      const frameId = payloadNumber(payload, "frameId") ?? rootFrameId;
+      const elements = querySelectorAll(payload.selector, frameId, payloadNumber(payload, "rootHandleId"));
       return executeExpression(
+        frameId,
         payload.expression,
         payload.isFunction,
         payload.argValue,
-        payload.handleIds || [],
+        payloadArray(payload, "handleIds") || [],
         elements
       );
     },
 
-    textContent(payload: AnyRecord) {
-      const target = resolveTarget(payload);
-      return target ? target.textContent : null;
-    },
-
-    innerText(payload: AnyRecord) {
-      return requireTarget(payload).innerText;
-    },
-
-    innerHTML(payload: AnyRecord) {
-      return requireTarget(payload).innerHTML;
-    },
-
-    getAttribute(payload: AnyRecord) {
+    textContent(payload: MessagePayload) {
       const target = resolveTarget(payload);
       if (!target) return null;
-      return target.getAttribute(payload.name);
+      return (target as { textContent: string | null }).textContent;
     },
 
-    inputValue(payload: AnyRecord) {
+    innerText(payload: MessagePayload) {
+      return (requireTarget(payload) as { innerText: string }).innerText;
+    },
+
+    innerHTML(payload: MessagePayload) {
+      return (requireTarget(payload) as { innerHTML: string }).innerHTML;
+    },
+
+    getAttribute(payload: MessagePayload) {
+      const target = resolveTarget(payload);
+      if (!target) return null;
+      const name = payloadString(payload, "name");
+      return name ? (target as { getAttribute(name: string): string | null }).getAttribute(name) : null;
+    },
+
+    inputValue(payload: MessagePayload) {
       return getTextValue(requireTarget(payload));
     },
 
     content() {
-      if (document.doctype) {
-        return "<!DOCTYPE " + document.doctype.name + ">" + document.documentElement.outerHTML;
+      const doc = resolveFrameDocument(rootFrameId);
+      if (doc.doctype) {
+        return "<!DOCTYPE " + doc.doctype.name + ">" + doc.documentElement.outerHTML;
       }
-      return document.documentElement.outerHTML;
+      return doc.documentElement.outerHTML;
     },
 
-    title() {
-      return document.title;
+    frameContent(payload: MessagePayload) {
+      const doc = resolveFrameDocument(payloadNumber(payload, "frameId") ?? rootFrameId);
+      if (doc.doctype) {
+        return "<!DOCTYPE " + doc.doctype.name + ">" + doc.documentElement.outerHTML;
+      }
+      return doc.documentElement.outerHTML;
     },
 
-    focus(payload: AnyRecord) {
+    title(payload: MessagePayload = {}) {
+      return resolveFrameDocument(payloadNumber(payload, "frameId") ?? rootFrameId).title;
+    },
+
+    focus(payload: MessagePayload) {
       focusTarget(requireTarget(payload));
       return null;
     },
 
-    blur(payload: AnyRecord) {
-      const target = requireTarget(payload);
+    blur(payload: MessagePayload) {
+      const target = requireTarget(payload) as { blur?: () => void };
       if (typeof target.blur !== "function") throw new Error("Target is not blur-capable");
       target.blur();
       return null;
     },
 
-    click(payload: AnyRecord) {
-      const target = requireTarget(payload);
+    click(payload: MessagePayload) {
+      const target = requireTarget(payload) as { click?: () => void };
       if (typeof target.click === "function") target.click();
       else dispatchSyntheticEvent(target, "click", {});
       return null;
     },
 
-    dblclick(payload: AnyRecord) {
-      dispatchSyntheticEvent(requireTarget(payload), "dblclick", {});
+    dblclick(payload: MessagePayload) {
+      const target = requireTarget(payload);
+      dispatchSyntheticEvent(target, "dblclick", {});
       return null;
     },
 
-    hover(payload: AnyRecord) {
-      const target = requireTarget(payload);
+    hover(payload: MessagePayload) {
+      const target = requireTarget(payload) as { dispatchEvent?: (event: Event) => void };
       dispatchSyntheticEvent(target, "mouseover", {});
       dispatchSyntheticEvent(target, "mouseenter", {});
       return null;
     },
 
-    scrollIntoViewIfNeeded(payload: AnyRecord) {
+    scrollIntoViewIfNeeded(payload: MessagePayload) {
       scrollIntoViewIfNeeded(requireTarget(payload));
       return null;
     },
 
-    dispatchEvent(payload: AnyRecord) {
-      const init = deserialize(payload.eventInitValue, payload.handleIds || []);
-      dispatchSyntheticEvent(requireTarget(payload), payload.type, init);
+    dispatchEvent(payload: MessagePayload) {
+      const init = deserialize(payload.eventInitValue, asNumberArray(payload.handleIds));
+      dispatchSyntheticEvent(requireTarget(payload), payloadString(payload, "type") ?? "", init);
       return null;
     },
 
-    fill(payload: AnyRecord) {
-      const target = requireTarget(payload);
-      focusTarget(target);
-      setNativeValue(target, payload.value);
-      dispatchSyntheticEvent(target, "input", {});
-      dispatchSyntheticEvent(target, "change", {});
-      return null;
+    fill(payload: MessagePayload) {
+      return runElementAction(requireTarget(payload), "fill", payload);
     },
 
-    type(payload: AnyRecord) {
-      return typeIntoTarget(requireTarget(payload), payload.text);
+    type(payload: MessagePayload) {
+      return runElementAction(requireTarget(payload), "type", payload);
     },
 
-    press(payload: AnyRecord) {
-      return pressTarget(requireTarget(payload), payload.key);
+    press(payload: MessagePayload) {
+      return runElementAction(requireTarget(payload), "press", payload);
     },
 
-    check(payload: AnyRecord) {
+    check(payload: MessagePayload) {
       const target = requireTarget(payload);
       if (!(target instanceof HTMLInputElement)) {
         throw new Error("Target is not a checkbox or radio button");
       }
-      if (target.type === "radio" && payload.checked === false) {
+      const checked = payloadBoolean(payload, "checked");
+      if (target.type === "radio" && checked === false) {
         throw new Error("Cannot uncheck radio button");
       }
-      if (!payload.trial && target.checked !== payload.checked) target.click();
+      if (!payloadBoolean(payload, "trial") && target.checked !== checked) target.click();
       return target.checked;
     },
 
-    selectOption(payload: AnyRecord) {
-      const target = requireTarget(payload);
-      if (!(target instanceof HTMLSelectElement)) {
-        throw new Error("Target is not a select element");
-      }
-
-      let selectedOptions: HTMLOptionElement[] = [];
-      if (payload.optionHandleIds && payload.optionHandleIds.length) {
-        selectedOptions = payload.optionHandleIds
-          .map((id: number) => resolveHandle(id))
-          .filter((value: unknown): value is HTMLOptionElement => value instanceof HTMLOptionElement);
-      } else {
-        const specs = payload.options || [];
-        if (!specs.length) {
-          selectedOptions = [];
-        } else {
-          selectedOptions = Array.from(target.options).filter((option) =>
-            specs.some((spec: any) => matchesOption(option, spec))
-          );
-        }
-      }
-
-      if (!target.multiple && selectedOptions.length > 1) {
-        selectedOptions = selectedOptions.slice(0, 1);
-      }
-
-      for (const option of Array.from(target.options)) {
-        option.selected = selectedOptions.includes(option);
-      }
-
-      dispatchSyntheticEvent(target, "input", {});
-      dispatchSyntheticEvent(target, "change", {});
-
-      return Array.from(target.selectedOptions).map((option) => option.value);
+    selectOption(payload: MessagePayload) {
+      return runElementAction(requireTarget(payload), "selectOption", {
+        options: payloadArray(payload, "options"),
+        optionElements: asNumberArray(payload.optionHandleIds).map((id) => resolveHandle(id)),
+      });
     },
 
-    isVisible(payload: AnyRecord) {
+    isVisible(payload: MessagePayload) {
       const target = resolveTarget(payload);
       if (!target) return false;
       const result = readElementState(target, "visible");
       return result.received !== "error:notconnected" && result.matches;
     },
 
-    isHidden(payload: AnyRecord) {
+    isHidden(payload: MessagePayload) {
       const target = resolveTarget(payload);
       if (!target) return true;
       const result = readElementState(target, "hidden");
       return result.received === "error:notconnected" || result.matches;
     },
 
-    isChecked(payload: AnyRecord) {
+    isChecked(payload: MessagePayload) {
       const target = resolveTarget(payload);
       if (!target) return false;
       const result = readElementState(target, "checked");
       return result.received !== "error:notconnected" && result.matches;
     },
 
-    isDisabled(payload: AnyRecord) {
+    isDisabled(payload: MessagePayload) {
       const target = resolveTarget(payload);
       if (!target) return false;
       const result = readElementState(target, "disabled");
       return result.received !== "error:notconnected" && result.matches;
     },
 
-    isEnabled(payload: AnyRecord) {
+    isEnabled(payload: MessagePayload) {
       const target = resolveTarget(payload);
       if (!target) return false;
       const result = readElementState(target, "enabled");
       return result.received !== "error:notconnected" && result.matches;
     },
 
-    isEditable(payload: AnyRecord) {
+    isEditable(payload: MessagePayload) {
       const target = resolveTarget(payload);
       if (!target) return false;
       const result = readElementState(target, "editable");

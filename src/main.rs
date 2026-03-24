@@ -1,123 +1,10 @@
 use wasm_bindgen::JsCast;
-use wasm_bindgen::prelude::*;
 use wry_launch::{LaunchBuilder, WebViewBuilder, WindowBuilder};
+mod native_bridge;
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Read as _, Write};
 use std::sync::{Arc, Condvar, Mutex};
-
-// ---------------------------------------------------------------------------
-// Native bridge — exported to JavaScript via wasm-bindgen as a proper class.
-// The wry-bindgen runtime automatically places this on `window.NativeBridge`.
-// ---------------------------------------------------------------------------
-
-#[wasm_bindgen]
-pub struct NativeBridge {}
-
-#[wasm_bindgen]
-impl NativeBridge {
-    #[wasm_bindgen(constructor)]
-    pub fn new() -> NativeBridge {
-        NativeBridge {}
-    }
-
-    #[wasm_bindgen(js_name = "getSystemInfo")]
-    pub fn get_system_info(&self) -> String {
-        serde_json::json!({
-            "os": std::env::consts::OS,
-            "arch": std::env::consts::ARCH,
-            "family": std::env::consts::FAMILY,
-            "exe": std::env::current_exe()
-                .map(|p| p.display().to_string())
-                .unwrap_or_default(),
-            "cwd": std::env::current_dir()
-                .map(|p| p.display().to_string())
-                .unwrap_or_default(),
-        })
-        .to_string()
-    }
-
-    pub fn fibonacci(&self, n: f64) -> f64 {
-        let n = n as u64;
-        let result = if n <= 1 {
-            n
-        } else {
-            let (mut a, mut b) = (0u64, 1u64);
-            for _ in 2..=n {
-                let c = a.wrapping_add(b);
-                a = b;
-                b = c;
-            }
-            b
-        };
-        result as f64
-    }
-
-    #[wasm_bindgen(js_name = "readDir")]
-    pub fn read_dir(&self, path: String) -> String {
-        match std::fs::read_dir(&path) {
-            Ok(entries) => {
-                let mut items: Vec<serde_json::Value> = entries
-                    .filter_map(|e| e.ok())
-                    .map(|e| {
-                        let meta = e.metadata().ok();
-                        serde_json::json!({
-                            "name": e.file_name().to_string_lossy(),
-                            "isDir": meta.as_ref().map(|m| m.is_dir()).unwrap_or(false),
-                            "size": meta.as_ref().map(|m| m.len()).unwrap_or(0),
-                        })
-                    })
-                    .collect();
-                items.sort_by(|a, b| {
-                    let a_dir = a["isDir"].as_bool().unwrap_or(false);
-                    let b_dir = b["isDir"].as_bool().unwrap_or(false);
-                    b_dir.cmp(&a_dir).then_with(|| {
-                        a["name"]
-                            .as_str()
-                            .unwrap_or("")
-                            .cmp(b["name"].as_str().unwrap_or(""))
-                    })
-                });
-                serde_json::json!({ "entries": items }).to_string()
-            }
-            Err(e) => serde_json::json!({ "error": e.to_string() }).to_string(),
-        }
-    }
-
-    #[wasm_bindgen(js_name = "readFile")]
-    pub fn read_file(&self, path: String) -> String {
-        match std::fs::read_to_string(&path) {
-            Ok(content) => {
-                let truncated = content.len() > 10_000;
-                let display = if truncated {
-                    &content[..10_000]
-                } else {
-                    &content
-                };
-                serde_json::json!({
-                    "content": display,
-                    "truncated": truncated,
-                    "totalBytes": content.len(),
-                })
-                .to_string()
-            }
-            Err(e) => serde_json::json!({ "error": e.to_string() }).to_string(),
-        }
-    }
-
-    #[wasm_bindgen(js_name = "writeFile")]
-    pub fn write_file(&self, path: String, content: String) -> String {
-        match std::fs::write(&path, &content) {
-            Ok(()) => serde_json::json!({ "ok": true }).to_string(),
-            Err(e) => serde_json::json!({ "error": e.to_string() }).to_string(),
-        }
-    }
-
-    #[wasm_bindgen(js_name = "getEnv")]
-    pub fn get_env(&self, key: String) -> Option<String> {
-        std::env::var(&key).ok()
-    }
-}
 
 /// Shared state for the test automation bridge.
 /// External tests send JS commands via TCP; the webview polls for them
@@ -629,32 +516,51 @@ fn setup_app(http_bridge_port: Option<u16>) {
     }});
 
     console.log('[test-bridge] polling script starting on port {port}');
-    var lastResult = null;
+    var pendingResults = [];
+    var pollInFlight = false;
+    var pollQueued = false;
+    function schedulePoll(delay) {{
+      if (pollQueued) {{
+        return;
+      }}
+      pollQueued = true;
+      setTimeout(function() {{
+        pollQueued = false;
+        poll();
+      }}, delay);
+    }}
+    function enqueueBridgePayload(payload) {{
+      pendingResults.push(payload);
+      schedulePoll(0);
+    }}
     function setBridgeResult(id, value) {{
-      lastResult = JSON.stringify({{
+      enqueueBridgePayload(JSON.stringify({{
         id: id,
         result: serializeBridgeValue(value)
-      }});
-      setTimeout(poll, 0);
+      }}));
     }}
     function setBridgeError(id, error) {{
-      lastResult = JSON.stringify({{
+      enqueueBridgePayload(JSON.stringify({{
         id: id,
         result: {{
           __error: error && error.message ? error.message : String(error),
           __stack: error && error.stack ? error.stack : ''
         }}
-      }});
-      setTimeout(poll, 0);
+      }}));
     }}
     function poll() {{
+      if (pollInFlight) {{
+        schedulePoll(0);
+        return;
+      }}
+      pollInFlight = true;
       var url = 'http://127.0.0.1:{port}/poll';
-      var payload = lastResult !== null ? lastResult : '';
-      lastResult = null;
+      var payload = pendingResults.length ? pendingResults.shift() : '';
       var xhr = new XMLHttpRequest();
       xhr.open('POST', url, true);
       xhr.setRequestHeader('Content-Type', 'text/plain;charset=UTF-8');
       xhr.onload = function() {{
+        pollInFlight = false;
         var data;
         try {{
           data = JSON.parse(xhr.responseText);
@@ -673,10 +579,13 @@ fn setup_app(http_bridge_port: Option<u16>) {
             setBridgeError(data.id, e);
           }}
         }} else {{
-          setTimeout(poll, 30);
+          schedulePoll(30);
         }}
       }};
-      xhr.onerror = function() {{ setTimeout(poll, 100); }};
+      xhr.onerror = function() {{
+        pollInFlight = false;
+        schedulePoll(100);
+      }};
       xhr.send(payload);
     }}
     poll();

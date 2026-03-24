@@ -2,6 +2,7 @@ export interface HandleMeta {
   id: number;
   type: "element" | "js";
   preview: string;
+  frameId: number;
 }
 
 export interface PropertyHandleEntry {
@@ -17,6 +18,15 @@ export interface Snapshot {
     height: number;
   };
 }
+
+export interface FrameMeta {
+  id: number;
+  url: string;
+  name: string;
+  parentFrameId: number | null;
+}
+
+export type FrameInfo = FrameMeta;
 
 export interface HandleReference {
   handleId: number;

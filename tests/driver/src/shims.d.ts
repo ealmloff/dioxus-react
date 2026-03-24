@@ -1,12 +1,12 @@
 declare module "node:child_process" {
   interface ReadableLike {
     setEncoding(encoding: string): void;
-    on(event: string, listener: (...args: any[]) => void): this;
+    on(event: string, listener: (...args: unknown[]) => void): this;
   }
 
   export interface ChildProcess {
     kill(signal?: string): boolean;
-    once(event: string, listener: (...args: any[]) => void): this;
+    once(event: string, listener: (...args: unknown[]) => void): this;
     stdout?: ReadableLike;
     stderr?: ReadableLike;
   }
@@ -23,7 +23,7 @@ declare module "node:child_process" {
 
 declare module "node:module" {
   export interface RequireFn {
-    (id: string): any;
+    (id: string): unknown;
     resolve(id: string): string;
   }
 
@@ -32,8 +32,8 @@ declare module "node:module" {
 
 declare module "node:net" {
   export interface Socket {
-    once(event: string, listener: (...args: any[]) => void): this;
-    on(event: string, listener: (...args: any[]) => void): this;
+    once(event: string, listener: (...args: unknown[]) => void): this;
+    on(event: string, listener: (...args: unknown[]) => void): this;
     setEncoding(encoding: string): void;
     write(chunk: string): void;
     destroy(): void;

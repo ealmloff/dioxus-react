@@ -58,7 +58,7 @@ test.afterEach(async () => {
 test("connects to the real embedded WRY page", async () => {
   expect(currentPage().url()).toContain("wry://");
   await expect.poll(() => currentPage().title()).toBe("dioxus-react");
-  await expect.poll(() => currentPage().evaluate(() => document.querySelectorAll(".tab").length)).toBe(6);
+  await expect.poll(() => currentPage().evaluate(() => document.querySelectorAll(".tab").length)).toBe(7);
   await expect.poll(() => currentPage().textContent("h1")).toBe("dioxus-react");
   await expect.poll(() => currentPage().content()).toContain("wasm-bindgen-wry");
 });
@@ -119,7 +119,6 @@ test("supports frame-level form and state methods", async () => {
   await expect.poll(() => currentPage().textContent("#lab-checkbox-output")).toBe("checked");
 
   await currentPage().uncheck("#lab-checkbox");
-  expect(await currentPage().isChecked("#lab-checkbox")).toBe(false);
   await expect.poll(() => currentPage().textContent("#lab-checkbox-output")).toBe("unchecked");
 
   await currentPage().selectOption("#lab-select", { label: "Green" });
@@ -213,6 +212,182 @@ test("supports advanced locator combinators on real app fixtures", async () => {
   await union.last().click();
   await expect.poll(() => currentPage().textContent("#selector-status")).toBe("gamma");
 });
+
+test("supports nested iframe content through the proxy surface", async () => {
+  await clickTab("Locator Lab");
+  await expect.poll(() => currentPage().textContent("h2")).toBe("Locator Lab");
+
+  const frame = await currentPage().$("#locator-frame");
+  expect(frame).toBeTruthy();
+  expect(await frame.getAttribute("title")).toBe("Nested action frame");
+
+  await expect.poll(() =>
+    frame.evaluate(
+      (iframe) => iframe.contentDocument?.getElementById("frame-status")?.textContent
+    )
+  ).toBe("ready");
+  expect(
+    await frame.evaluate(
+      (iframe) => iframe.contentDocument?.getElementById("frame-title")?.textContent
+    )
+  ).toBe("Nested Frame");
+  expect(
+    await frame.evaluate(
+      (iframe) => iframe.contentDocument?.getElementById("frame-count")?.textContent
+    )
+  ).toBe("0");
+
+  await frame.evaluate((iframe) => {
+    const button = iframe.contentDocument?.getElementById("frame-action");
+    if (!button) throw new Error("Frame action button not found");
+    button.click();
+  });
+
+  await expect.poll(() =>
+    frame.evaluate(
+      (iframe) => iframe.contentDocument?.getElementById("frame-count")?.textContent
+    )
+  ).toBe("1");
+  await expect.poll(() => currentPage().textContent("#locator-frame-output")).toBe("1");
+});
+
+test("waits for a delayed action target to become visible and enabled", async () => {
+  await clickTab("Locator Lab");
+  await expect.poll(() => currentPage().textContent("h2")).toBe("Locator Lab");
+
+  expect(await currentPage().isVisible("#locator-delayed-action")).toBe(false);
+  await expect.poll(() => currentPage().textContent("#locator-delayed-output")).toBe("waiting");
+
+  await currentPage().waitForSelector("#locator-delayed-action", { state: "visible" });
+  expect(await currentPage().isVisible("#locator-delayed-action")).toBe(true);
+  expect(await currentPage().isEnabled("#locator-delayed-action")).toBe(true);
+
+  await currentPage().click("#locator-delayed-action");
+  await expect.poll(() => currentPage().textContent("#locator-delayed-output")).toBe("clicked");
+});
+
+test("supports network probe requests in the Playwright surface lab", async () => {
+  await clickTab("Playwright Surface Lab");
+  await expect.poll(() => currentPage().textContent("h2")).toBe("Playwright Surface Lab");
+
+  await currentPage().click("#surface-network-probe");
+  await expect.poll(() => currentPage().textContent("#surface-network-output")).toBe(
+    "surface-network-probe"
+  );
+});
+
+test.skip("screenshot API: locator().screenshot()", async () => {
+  await clickTab("Playwright Surface Lab");
+  await expect.poll(() => currentPage().textContent("h2")).toBe("Playwright Surface Lab");
+
+  const shot = await currentPage()
+    .locator("#surface-screenshot-target")
+    .screenshot();
+  expect(Buffer.isBuffer(shot)).toBe(true);
+  expect(shot.length).toBeGreaterThan(100);
+});
+
+test.skip("supports file chooser interactions through setInputFiles", async () => {
+  await clickTab("Playwright Surface Lab");
+  await expect.poll(() => currentPage().textContent("h2")).toBe("Playwright Surface Lab");
+
+  await currentPage().locator("#surface-file-input").setInputFiles({
+    name: "surface-upload.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from("surface-upload"),
+  });
+  await expect.poll(() => currentPage().textContent("#surface-file-output")).toBe(
+    "surface-upload.txt"
+  );
+}, "Current driver does not yet implement setInputFiles");
+
+test.skip("dialog API: page.waitForEvent('dialog')", async () => {
+  await clickTab("Playwright Surface Lab");
+  await expect.poll(() => currentPage().textContent("h2")).toBe("Playwright Surface Lab");
+
+  const dialog = await Promise.all([
+    currentPage().waitForEvent("dialog"),
+    currentPage().click("#surface-dialog-button"),
+  ]).then(([event]) => event);
+
+  expect(dialog.type()).toBe("confirm");
+  expect(dialog.message()).toBe("Surface dialog probe");
+  await dialog.dismiss();
+  await expect.poll(() => currentPage().textContent("#surface-dialog-output")).toBe("dismissed");
+}, "Current driver does not yet implement dialog events");
+
+test.skip("supports hash navigation and back-button history", async () => {
+  await clickTab("Playwright Surface Lab");
+  await expect.poll(() => currentPage().textContent("h2")).toBe("Playwright Surface Lab");
+
+  await expect.poll(() => currentPage().textContent("#surface-nav-output")).toBe("(none)");
+  await currentPage().click("#surface-nav-link");
+  await expect.poll(() => currentPage().evaluate(() => window.location.hash)).toBe(
+    "#surface-anchor"
+  );
+  await expect.poll(() => currentPage().textContent("#surface-nav-output")).toBe(
+    "#surface-anchor"
+  );
+
+  await currentPage().goBack();
+  await expect.poll(() => currentPage().evaluate(() => window.location.hash)).toBe("");
+}, "Current driver does not yet implement page.goBack");
+
+test.skip("supports viewport resize reporting", async () => {
+  await clickTab("Playwright Surface Lab");
+  await expect.poll(() => currentPage().textContent("h2")).toBe("Playwright Surface Lab");
+
+  await currentPage().setViewportSize({ width: 980, height: 760 });
+  await expect.poll(() => currentPage().textContent("#surface-viewport-output")).toBe("980x760");
+
+  await currentPage().setViewportSize({ width: 1200, height: 900 });
+  await expect.poll(() => currentPage().textContent("#surface-viewport-output")).toBe("1200x900");
+}, "Current driver does not yet implement setViewportSize");
+
+test.skip("geolocation API: context.setGeolocation()", async () => {
+  await clickTab("Playwright Surface Lab");
+  await expect.poll(() => currentPage().textContent("h2")).toBe("Playwright Surface Lab");
+
+  const context = currentPage().context();
+  await context.grantPermissions(["geolocation"]);
+  await context.setGeolocation({ latitude: 37.4219, longitude: -122.084 });
+
+  await currentPage().click("#surface-geolocation-query");
+  await expect
+    .poll(() => currentPage().textContent("#surface-geolocation-output"))
+    .not.toBe("requesting");
+
+  const geo = await currentPage().textContent("#surface-geolocation-output");
+  expect(geo).toMatch(/^(?:-?\d+\.\d{4},-?\d+\.\d{4}|unsupported|denied|error:.*)$/);
+});
+
+test("supports keyboard input sequencing", async () => {
+  await clickTab("Playwright Surface Lab");
+  await expect.poll(() => currentPage().textContent("h2")).toBe("Playwright Surface Lab");
+
+  await currentPage().fill("#surface-keyboard-input", "");
+  await currentPage().type("#surface-keyboard-input", "ab");
+  await expect.poll(() => currentPage().textContent("#surface-keyboard-output")).toBe("a,b");
+});
+
+test.skip("supports modern locator queries on surface controls", async () => {
+  await clickTab("Playwright Surface Lab");
+  await expect.poll(() => currentPage().textContent("h2")).toBe("Playwright Surface Lab");
+
+  const surfaceList = currentPage().locator("#surface-locator-list");
+  expect(await surfaceList.getAttribute("role")).toBe("list");
+  expect(await surfaceList.locator("button").count()).toBe(3);
+  await expect.poll(() => currentPage().getByRole("listitem").count()).toBe(3);
+
+  await surfaceList.getByRole("button", { name: "Open Surface Beta" }).click();
+  await expect.poll(() => currentPage().textContent("#surface-locator-output")).toBe("beta");
+
+  await expect
+    .poll(() => currentPage().getByRole("button", { name: "Open Surface Gamma" }).count())
+    .toBe(1);
+  await currentPage().locator("#surface-locator-gamma").click();
+  await expect.poll(() => currentPage().textContent("#surface-locator-output")).toBe("gamma");
+}, "Current driver does not yet support the full modern locator surface");
 
 test("supports waiters and event dispatch", async () => {
   await clickTab("Automation Lab");

@@ -423,6 +423,41 @@ input[type="number"] {
   margin-bottom: 8px;
 }
 
+.frame-shell {
+  background: #020617;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  padding: 8px;
+  margin-bottom: 12px;
+}
+
+#locator-frame {
+  width: 100%;
+  min-height: 180px;
+  border: 1px solid #475569;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.locator-delayed-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+#locator-delayed-action {
+  min-width: 132px;
+}
+
+#locator-frame-status,
+#locator-frame-output,
+#locator-delayed-output {
+  display: inline-flex;
+  align-items: center;
+  margin-top: 0;
+}
+
 #selector-status {
   display: inline-flex;
   align-items: center;
@@ -445,6 +480,36 @@ input[type="number"] {
   margin-top: 12px;
   color: #60a5fa;
   font-weight: 600;
+}
+
+#surface-locator-list {
+  display: grid;
+  gap: 8px;
+}
+
+#surface-dialog-output,
+#surface-network-output,
+#surface-nav-output,
+#surface-viewport-output,
+#surface-keyboard-output,
+#surface-file-output,
+#surface-geolocation-output,
+#surface-locator-output {
+  margin-top: 10px;
+}
+
+.surface-shot-target {
+  width: 320px;
+  height: 120px;
+  background: linear-gradient(135deg, #2563eb22, #0ea5e922);
+  border: 1px dashed #64748b;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #f8fafc;
+  font-weight: 600;
+  letter-spacing: 0.02em;
 }
 
 /* Scrollbar */

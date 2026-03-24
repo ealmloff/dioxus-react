@@ -1,20 +1,38 @@
 import type { ProxyAppController } from "../controller";
-import { Dispatcher, serializeResult } from "../internals";
+import { Dispatcher, type DispatcherLike, serializeResult } from "../internals";
 import { ProxyObject } from "./base";
 import type { HandleMeta } from "../types";
+import type {
+  CheckParams,
+  DispatchEventParams,
+  EvalParams,
+  FillParams,
+  NameParams,
+  PressParams,
+  SelectorEvalParams,
+  SelectOptionParams,
+  SelectorParamsWithStrict,
+  TypeParams,
+  WaitSelectorParams,
+} from "./protocol";
+
+interface HandleOwnerScope {
+  frameId: number;
+  frameForId(frameId: number): unknown;
+}
 
 export class ProxyHandleDispatcher extends Dispatcher {
   readonly handleId: number;
-  private handleOwnerFrame: any;
+  private handleOwnerFrame: HandleOwnerScope;
   private controller: ProxyAppController;
 
   constructor(
-    parent: any,
+    parent: DispatcherLike,
     controller: ProxyAppController,
     meta: HandleMeta,
-    ownerFrame: any
+    ownerFrame: HandleOwnerScope
   ) {
-    const object = new ProxyObject(parent._object, "proxyHandle");
+    const object = new ProxyObject(parent._object as object, "proxyHandle");
     super(parent, object, meta.type === "element" ? "ElementHandle" : "JSHandle", {
       preview: meta.preview,
     });
@@ -23,7 +41,7 @@ export class ProxyHandleDispatcher extends Dispatcher {
     this.handleOwnerFrame = ownerFrame;
   }
 
-  async evaluateExpression(params: any): Promise<{ value: unknown }> {
+  async evaluateExpression(params: EvalParams): Promise<{ value: unknown }> {
     return {
       value: serializeResult(
         await this.controller.evaluateOnHandle(
@@ -36,7 +54,7 @@ export class ProxyHandleDispatcher extends Dispatcher {
     };
   }
 
-  async evaluateExpressionHandle(params: any): Promise<{ handle: ProxyHandleDispatcher }> {
+  async evaluateExpressionHandle(params: EvalParams): Promise<{ handle: ProxyHandleDispatcher }> {
     const meta = await this.controller.evaluateHandleOnHandle(
       this.handleId,
       params.expression,
@@ -53,7 +71,7 @@ export class ProxyHandleDispatcher extends Dispatcher {
     };
   }
 
-  async getProperty(params: any): Promise<{ handle: ProxyHandleDispatcher }> {
+  async getProperty(params: NameParams): Promise<{ handle: ProxyHandleDispatcher }> {
     const meta = await this.controller.getHandleProperty(this.handleId, params.name);
     return {
       handle: new ProxyHandleDispatcher(
@@ -82,12 +100,16 @@ export class ProxyHandleDispatcher extends Dispatcher {
     };
   }
 
-  async ownerFrame(): Promise<{ frame: any }> {
-    return { frame: this.handleOwnerFrame };
+  async ownerFrame(): Promise<{ frame: unknown }> {
+    const info = await this.controller.ownerFrameInfo(this.handleId);
+    return {
+      frame: info ? this.handleOwnerFrame.frameForId(info.id) : this.handleOwnerFrame,
+    };
   }
 
-  async contentFrame(): Promise<{ frame: null }> {
-    return { frame: null };
+  async contentFrame(): Promise<{ frame: unknown | null }> {
+    const info = await this.controller.contentFrameInfo(this.handleId);
+    return { frame: info ? this.handleOwnerFrame.frameForId(info.id) : null };
   }
 
   async jsonValue(): Promise<{ value: unknown }> {
@@ -99,7 +121,7 @@ export class ProxyHandleDispatcher extends Dispatcher {
     this._dispose();
   }
 
-  async getAttribute(params: any): Promise<{ value?: string }> {
+  async getAttribute(params: NameParams): Promise<{ value?: string }> {
     const value = await this.controller.getAttribute(null, null, this.handleId, params.name);
     return value === null ? {} : { value };
   }
@@ -145,7 +167,7 @@ export class ProxyHandleDispatcher extends Dispatcher {
     return { value: await this.controller.boolState("isVisible", null, null, this.handleId) };
   }
 
-  async dispatchEvent(params: any): Promise<void> {
+  async dispatchEvent(params: DispatchEventParams): Promise<void> {
     await this.controller.dispatchEvent(
       null,
       null,
@@ -175,7 +197,7 @@ export class ProxyHandleDispatcher extends Dispatcher {
     await this.click();
   }
 
-  async selectOption(params: any): Promise<{ values: string[] }> {
+  async selectOption(params: SelectOptionParams): Promise<{ values: string[] }> {
     return {
       values: await this.controller.selectOption(
         null,
@@ -187,7 +209,7 @@ export class ProxyHandleDispatcher extends Dispatcher {
     };
   }
 
-  async fill(params: any): Promise<void> {
+  async fill(params: FillParams): Promise<void> {
     await this.controller.fill(null, null, this.handleId, params.value);
   }
 
@@ -195,24 +217,25 @@ export class ProxyHandleDispatcher extends Dispatcher {
     await this.controller.focus(null, null, this.handleId);
   }
 
-  async type(params: any): Promise<void> {
+  async type(params: TypeParams): Promise<void> {
     await this.controller.type(null, null, this.handleId, params.text);
   }
 
-  async press(params: any): Promise<void> {
+  async press(params: PressParams): Promise<void> {
     await this.controller.press(null, null, this.handleId, params.key);
   }
 
-  async check(params: any): Promise<void> {
+  async check(params: CheckParams): Promise<void> {
     await this.controller.setChecked(null, null, this.handleId, true, params.trial);
   }
 
-  async uncheck(params: any): Promise<void> {
+  async uncheck(params: CheckParams): Promise<void> {
     await this.controller.setChecked(null, null, this.handleId, false, params.trial);
   }
 
-  async querySelector(params: any): Promise<{ element?: ProxyHandleDispatcher }> {
+  async querySelector(params: SelectorParamsWithStrict): Promise<{ element?: ProxyHandleDispatcher }> {
     const meta = await this.controller.querySelector(
+      this.handleOwnerFrame.frameId,
       params.selector,
       this.handleId,
       params.strict
@@ -229,8 +252,14 @@ export class ProxyHandleDispatcher extends Dispatcher {
     };
   }
 
-  async querySelectorAll(params: any): Promise<{ elements: ProxyHandleDispatcher[] }> {
-    const elements = await this.controller.querySelectorAll(params.selector, this.handleId);
+  async querySelectorAll(
+    params: SelectorParamsWithStrict
+  ): Promise<{ elements: ProxyHandleDispatcher[] }> {
+    const elements = await this.controller.querySelectorAll(
+      this.handleOwnerFrame.frameId,
+      params.selector,
+      this.handleId
+    );
     return {
       elements: elements.map(
         (meta) =>
@@ -244,10 +273,11 @@ export class ProxyHandleDispatcher extends Dispatcher {
     };
   }
 
-  async evalOnSelector(params: any): Promise<{ value: unknown }> {
+  async evalOnSelector(params: SelectorEvalParams): Promise<{ value: unknown }> {
     return {
       value: serializeResult(
         await this.controller.evalOnSelector(
+          this.handleOwnerFrame.frameId,
           params.selector,
           this.handleId,
           params.expression,
@@ -259,10 +289,11 @@ export class ProxyHandleDispatcher extends Dispatcher {
     };
   }
 
-  async evalOnSelectorAll(params: any): Promise<{ value: unknown }> {
+  async evalOnSelectorAll(params: SelectorEvalParams): Promise<{ value: unknown }> {
     return {
       value: serializeResult(
         await this.controller.evalOnSelectorAll(
+          this.handleOwnerFrame.frameId,
           params.selector,
           this.handleId,
           params.expression,
@@ -273,8 +304,9 @@ export class ProxyHandleDispatcher extends Dispatcher {
     };
   }
 
-  async waitForSelector(params: any): Promise<{ element?: ProxyHandleDispatcher }> {
+  async waitForSelector(params: WaitSelectorParams): Promise<{ element?: ProxyHandleDispatcher }> {
     const meta = await this.controller.waitForSelector(
+      this.handleOwnerFrame.frameId,
       params.selector,
       this.handleId,
       params.state,

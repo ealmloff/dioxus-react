@@ -4,9 +4,13 @@
   "description": "Use **React** for your UI while accessing **native Rust** capabilities — powered by [wasm-bindgen-wry](https://github.com/DioxusLabs/wasm-bindgen-wry).",
   "main": "index.js",
   "scripts": {
+    "gen:bridge-types": "node scripts/generate-native-bridge-types.mjs",
     "build": "tsc -p tests/driver/tsconfig.json --noEmit && node esbuild.mjs",
+    "prebuild": "npm run gen:bridge-types",
     "build:watch": "node esbuild.mjs --watch",
     "build:all": "npm run build && cargo build",
+    "lint": "eslint assets/src tests/driver/src",
+    "lint:fix": "npm run lint -- --fix",
     "test": "npm run build:all && playwright test",
     "test:debug": "npm run build:all && DEBUG=1 playwright test --reporter=list"
   },
@@ -21,7 +25,12 @@
     "@playwright/test": "^1.58.2",
     "@types/react": "^18.0.0",
     "@types/react-dom": "^18.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.46.2",
+    "@typescript-eslint/parser": "^8.46.2",
     "esbuild": "^0.25.0",
+    "eslint": "^8.57.1",
+    "eslint-plugin-react": "^7.37.4",
+    "eslint-plugin-react-hooks": "^4.6.2",
     "serve": "^14.2.6",
     "typescript": "^5.0.0"
   }

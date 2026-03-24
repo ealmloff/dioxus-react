@@ -3,6 +3,8 @@ import { ProxyAppController } from "./controller";
 import {
   DispatcherConnection,
   RootDispatcher,
+  type DispatcherConnectionLike,
+  type DispatcherLike,
   wsServer,
 } from "./internals";
 import { ProxyPlaywrightDispatcher } from "./dispatchers/browser";
@@ -11,19 +13,34 @@ interface ProxyOptions {
   proxyPort?: number;
 }
 
+interface WebSocketLike {
+  send(data: string): void;
+  on(event: "message", listener: (data: unknown) => void): this;
+  on(event: "close", listener: () => void): this;
+  close(): void;
+  terminate?: () => void;
+}
+
+interface WsServerLike {
+  on(event: "connection", listener: (socket: WebSocketLike) => void): this;
+  once(event: "listening", listener: () => void): this;
+  address(): { port: number } | string | null;
+  close(callback: () => void): void;
+}
+
 export class PlaywrightWryProxy {
   private proxyPort: number;
-  private server: any = null;
-  private connections = new Map<any, ProxyAppController>();
-  private sockets = new Set<any>();
+  private server: WsServerLike | null = null;
+  private connections = new Map<DispatcherConnectionLike, ProxyAppController>();
+  private sockets = new Set<WebSocketLike>();
 
   constructor({ proxyPort = DEFAULT_PROXY_PORT }: ProxyOptions = {}) {
     this.proxyPort = proxyPort;
   }
 
   async start(): Promise<string> {
-    this.server = new wsServer({ port: this.proxyPort });
-    this.server.on("connection", (socket: any) => {
+    this.server = new wsServer({ port: this.proxyPort }) as WsServerLike;
+    this.server.on("connection", (socket: WebSocketLike) => {
       if (process.env.DEBUG) {
         console.error("[proxy] ws client connected");
       }
@@ -31,15 +48,21 @@ export class PlaywrightWryProxy {
       const controller = new ProxyAppController({ appPort: randomPort() });
       const connection = new DispatcherConnection();
       this.connections.set(connection, controller);
+      const connectionLike = connection as {
+        onmessage?: (message?: unknown) => void;
+      };
 
       const init = controller.start();
 
-      const root = new RootDispatcher(connection, async (scope: any) => {
-        await init;
-        return new ProxyPlaywrightDispatcher(scope, controller);
-      });
+      const root = new RootDispatcher(
+        connection,
+        async (scope: DispatcherLike) => {
+          await init;
+          return new ProxyPlaywrightDispatcher(scope, controller);
+        }
+      );
 
-      connection.onmessage = (message: unknown) => {
+      connectionLike.onmessage = (message?: unknown) => {
         socket.send(JSON.stringify(message));
       };
 
@@ -60,7 +83,7 @@ export class PlaywrightWryProxy {
       });
     });
 
-    await new Promise((resolve) => this.server.once("listening", resolve));
+    await new Promise<void>((resolve) => this.server?.once("listening", () => resolve()));
     return this.wsEndpoint();
   }
 
@@ -83,15 +106,23 @@ export class PlaywrightWryProxy {
     for (const socket of this.sockets) {
       try {
         socket.close();
-      } catch {}
+      } catch (error) {
+        if (process.env.DEBUG) {
+          console.error("proxy: socket.close failed", error);
+        }
+      }
       try {
         socket.terminate?.();
-      } catch {}
+      } catch (error) {
+        if (process.env.DEBUG) {
+          console.error("proxy: socket.terminate failed", error);
+        }
+      }
     }
     this.sockets.clear();
 
     if (this.server) {
-      await new Promise((resolve) => this.server.close(resolve));
+      await new Promise<void>((resolve) => this.server?.close(() => resolve()));
       this.server = null;
     }
 

@@ -4,27 +4,11 @@
 
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import ReactDOM from "react-dom/client";
+import type { NativeBridge } from "./nativeBridge";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
-interface INativeBridge {
-  getSystemInfo(): string;
-  fibonacci(n: number): number;
-  readDir(path: string): string;
-  readFile(path: string): string;
-  writeFile(path: string, content: string): string;
-  getEnv(key: string): string | null;
-}
-
-declare global {
-  interface Window {
-    NativeBridge?: {
-      new(): INativeBridge;
-    };
-  }
-}
 
 interface SystemInfoData {
   [key: string]: string;
@@ -52,9 +36,16 @@ interface ReadFileResult {
 // Native bridge factory — the Rust bridge is stateless, so use fresh handles.
 // ---------------------------------------------------------------------------
 
-function createNativeBridge(): INativeBridge {
-  if (window.NativeBridge) return window.NativeBridge.new();
-  throw new Error("Native bridge is not available");
+function createNativeBridge(): NativeBridge {
+  const bridge: unknown = window.NativeBridge;
+  if (!bridge) throw new Error("Native bridge is not available");
+
+  const withFactory = bridge as { new(): NativeBridge };
+  if (typeof (withFactory as { new?: unknown }).new === "function") {
+    return withFactory.new();
+  }
+
+  return new (bridge as { new(): NativeBridge })();
 }
 
 // ---------------------------------------------------------------------------
@@ -62,7 +53,8 @@ function createNativeBridge(): INativeBridge {
 // ---------------------------------------------------------------------------
 
 function callNative(fn: string, ...args: unknown[]): unknown {
-  const result = (createNativeBridge() as unknown as Record<string, Function>)[fn](...args);
+  const bridge = createNativeBridge() as Record<string, (...args: unknown[]) => unknown>;
+  const result = bridge[fn](...args);
   if (typeof result === "string") {
     try {
       return JSON.parse(result);
@@ -72,6 +64,74 @@ function callNative(fn: string, ...args: unknown[]): unknown {
   }
   return result;
 }
+
+const LOCATOR_FRAME_SRC_DOC = `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body {
+        margin: 0;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #f8fafc;
+        color: #0f172a;
+      }
+      .frame-shell {
+        padding: 10px;
+      }
+      .frame-status {
+        margin: 0 0 8px;
+        font-size: 12px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+      .frame-button {
+        border: 0;
+        border-radius: 8px;
+        padding: 8px 12px;
+        background: #2563eb;
+        color: #fff;
+        font-size: 13px;
+        font-weight: 600;
+      }
+      .frame-count {
+        margin: 8px 0 0;
+        font-family: "SF Mono", "Fira Code", monospace;
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="frame-shell">
+      <p id="frame-status" class="frame-status">loading</p>
+      <button id="frame-action" class="frame-button" disabled>Frame action</button>
+      <p id="frame-title">Nested Frame</p>
+      <p id="frame-count" class="frame-count">0</p>
+    </div>
+    <script>
+      const status = document.getElementById("frame-status");
+      const action = document.getElementById("frame-action");
+      const count = document.getElementById("frame-count");
+      const notifyParent = () => {
+        parent.postMessage(
+          { kind: "locator-frame-state", status: status.textContent, count: count.textContent },
+          "*"
+        );
+      };
+      window.setTimeout(() => {
+        status.textContent = "ready";
+        action.disabled = false;
+        notifyParent();
+      }, 120);
+      action.addEventListener("click", () => {
+        count.textContent = String(Number(count.textContent || "0") + 1);
+        notifyParent();
+      });
+      notifyParent();
+    </script>
+  </body>
+</html>`;
 
 // ---------------------------------------------------------------------------
 // Tab navigation
@@ -600,6 +660,33 @@ function AutomationLab() {
 function LocatorLab() {
   const [saved, setSaved] = useState(false);
   const [selectorState, setSelectorState] = useState("idle");
+  const [frameStatus, setFrameStatus] = useState("loading");
+  const [frameClickCount, setFrameClickCount] = useState(0);
+  const [delayedActionable, setDelayedActionable] = useState(false);
+  const [delayedClicked, setDelayedClicked] = useState(false);
+
+  useEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      const data = event.data as { kind?: string; status?: string; count?: string } | undefined;
+      if (!data || data.kind !== "locator-frame-state") {
+        return;
+      }
+
+      if (typeof data.status === "string") {
+        setFrameStatus(data.status);
+      }
+      if (typeof data.count === "string") {
+        setFrameClickCount(Number(data.count));
+      }
+    };
+
+    const timer = window.setTimeout(() => setDelayedActionable(true), 500);
+    window.addEventListener("message", onMessage);
+    return () => {
+      window.removeEventListener("message", onMessage);
+      window.clearTimeout(timer);
+    };
+  }, []);
 
   return (
     <div className="card automation-card" id="locator-lab">
@@ -738,6 +825,45 @@ function LocatorLab() {
             {selectorState}
           </p>
         </section>
+
+        <section className="lab-panel" id="locator-frame-panel">
+          <h3>Iframe and Delayed Actionability</h3>
+          <p className="subtitle">
+            Nested same-origin content plus a delayed action target for proxy tests.
+          </p>
+
+          <div className="frame-shell">
+            <iframe
+              id="locator-frame"
+              title="Nested action frame"
+              srcDoc={LOCATOR_FRAME_SRC_DOC}
+            />
+          </div>
+
+          <div className="lab-output-list">
+            <p id="locator-frame-status" className="lab-output">
+              {frameStatus}
+            </p>
+            <p id="locator-frame-output" className="lab-output">
+              {String(frameClickCount)}
+            </p>
+          </div>
+
+          <div className="locator-delayed-row">
+            <button
+              id="locator-delayed-action"
+              className="btn btn-sm"
+              hidden={!delayedActionable}
+              disabled={!delayedActionable}
+              onClick={() => setDelayedClicked(true)}
+            >
+              Delayed action
+            </button>
+            <p id="locator-delayed-output" className="lab-output">
+              {delayedClicked ? "clicked" : delayedActionable ? "ready" : "waiting"}
+            </p>
+          </div>
+        </section>
       </div>
     </div>
   );
@@ -747,11 +873,217 @@ function LocatorLab() {
 // App shell
 // ---------------------------------------------------------------------------
 
+function PlaywrightSurfaceLab() {
+  const [hashValue, setHashValue] = useState(() => window.location.hash || "(none)");
+  const [networkProbe, setNetworkProbe] = useState("idle");
+  const [viewportValue, setViewportValue] = useState(() => `${window.innerWidth}x${window.innerHeight}`);
+  const [dialogOutput, setDialogOutput] = useState("idle");
+  const [keyboardOutput, setKeyboardOutput] = useState("none");
+  const [selectedFile, setSelectedFile] = useState("none");
+  const [geolocationOutput, setGeolocationOutput] = useState("not-run");
+  const [locatorOutput, setLocatorOutput] = useState("none");
+
+  useEffect(() => {
+    const onHashChange = () => setHashValue(window.location.hash || "(none)");
+    const onResize = () => setViewportValue(`${window.innerWidth}x${window.innerHeight}`);
+
+    onHashChange();
+    onResize();
+    window.addEventListener("hashchange", onHashChange);
+    window.addEventListener("resize", onResize);
+
+    return () => {
+      window.removeEventListener("hashchange", onHashChange);
+      window.removeEventListener("resize", onResize);
+    };
+  }, []);
+
+  const runNetworkProbe = async () => {
+    setNetworkProbe("running");
+    try {
+      const response = await fetch("data:text/plain,surface-network-probe");
+      const text = await response.text();
+      setNetworkProbe(text || "empty");
+    } catch (error) {
+      setNetworkProbe(error instanceof Error ? `error:${error.message}` : "error");
+    }
+  };
+
+  const runGeolocationProbe = () => {
+    if (!navigator.geolocation) {
+      setGeolocationOutput("unsupported");
+      return;
+    }
+
+    setGeolocationOutput("requesting");
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        setGeolocationOutput(
+          `${position.coords.latitude.toFixed(4)},${position.coords.longitude.toFixed(4)}`
+        );
+      },
+      () => {
+        setGeolocationOutput("denied");
+      }
+    );
+  };
+
+  const runDialogProbe = () => {
+    setDialogOutput("requested");
+    const response = window.confirm("Surface dialog probe");
+    setDialogOutput(response ? "confirmed" : "dismissed");
+  };
+
+  return (
+    <div className="card automation-card" id="surface-lab">
+      <h2>Playwright Surface Lab</h2>
+      <p className="subtitle">Fixture surfaces for proxy parity expansion.</p>
+
+      <div className="lab-grid">
+        <section className="lab-panel" id="surface-nav-panel">
+          <h3>Navigation</h3>
+          <a id="surface-nav-link" href="#surface-anchor">
+            Go to hash anchor
+          </a>
+          <p id="surface-nav-output" className="lab-output">
+            {hashValue}
+          </p>
+          <p id="surface-anchor" className="lab-output">
+            surface anchor
+          </p>
+        </section>
+
+        <section className="lab-panel" id="surface-network-panel">
+          <h3>Network Probe</h3>
+          <button id="surface-network-probe" className="btn btn-sm" onClick={runNetworkProbe}>
+            Run fetch probe
+          </button>
+          <p id="surface-network-output" className="lab-output">
+            {networkProbe}
+          </p>
+        </section>
+
+        <section className="lab-panel" id="surface-viewport-panel">
+          <h3>Viewport Surface</h3>
+          <p id="surface-viewport-output" className="lab-output">
+            {viewportValue}
+          </p>
+        </section>
+
+        <section className="lab-panel" id="surface-keyboard-panel">
+          <h3>Keyboard Surface</h3>
+          <input
+            id="surface-keyboard-input"
+            className="lab-input"
+            placeholder="Type here"
+            onKeyDown={(event) => {
+              const next = keyboardOutput === "none"
+                ? event.key
+                : `${keyboardOutput},${event.key}`;
+              setKeyboardOutput(next.split(",").slice(-8).join(","));
+            }}
+          />
+          <p id="surface-keyboard-output" className="lab-output">
+            {keyboardOutput}
+          </p>
+        </section>
+
+        <section className="lab-panel" id="surface-chooser-panel">
+          <h3>Chooser Surface</h3>
+          <input
+            id="surface-file-input"
+            type="file"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              setSelectedFile(file?.name ?? "none");
+            }}
+          />
+          <p id="surface-file-output" className="lab-output">
+            {selectedFile}
+          </p>
+        </section>
+
+        <section className="lab-panel" id="surface-geolocation-panel">
+          <h3>Geolocation Surface</h3>
+          <button
+            id="surface-geolocation-query"
+            className="btn btn-sm"
+            onClick={runGeolocationProbe}
+          >
+            Query geolocation
+          </button>
+          <p id="surface-geolocation-output" className="lab-output">
+            {geolocationOutput}
+          </p>
+        </section>
+
+        <section className="lab-panel" id="surface-dialog-panel">
+          <h3>Dialog Surface</h3>
+          <button
+            id="surface-dialog-button"
+            className="btn btn-sm"
+            onClick={runDialogProbe}
+          >
+            Open dialog
+          </button>
+          <p id="surface-dialog-output" className="lab-output">
+            {dialogOutput}
+          </p>
+        </section>
+
+        <section className="lab-panel" id="surface-locator-panel">
+          <h3>Locator Surface</h3>
+          <div id="surface-locator-list" role="list">
+            <button
+              id="surface-locator-alpha"
+              className="btn btn-sm"
+              role="listitem"
+              aria-label="surface locator alpha"
+              onClick={() => setLocatorOutput("alpha")}
+            >
+              Open Surface Alpha
+            </button>
+            <button
+              id="surface-locator-beta"
+              className="btn btn-sm"
+              role="listitem"
+              aria-label="surface locator beta"
+              onClick={() => setLocatorOutput("beta")}
+            >
+              Open Surface Beta
+            </button>
+            <button
+              id="surface-locator-gamma"
+              className="btn btn-sm"
+              role="listitem"
+              aria-label="surface locator gamma"
+              onClick={() => setLocatorOutput("gamma")}
+            >
+              Open Surface Gamma
+            </button>
+          </div>
+          <p id="surface-locator-output" className="lab-output">
+            {locatorOutput}
+          </p>
+        </section>
+
+        <section className="lab-panel" id="surface-shot-panel">
+          <h3>Screenshot Surface</h3>
+          <div id="surface-screenshot-target" className="surface-shot-target">
+            Screenshot target
+          </div>
+        </section>
+      </div>
+    </div>
+  );
+}
+
 const TAB_NAMES = [
   "System Info",
   "Fibonacci",
   "File Explorer",
   "Counter",
+  "Playwright Surface Lab",
   "Locator Lab",
   "Automation Lab",
 ];
@@ -777,6 +1109,9 @@ function App() {
     case "Counter":
       content = <Counter />;
       break;
+    case "Playwright Surface Lab":
+      content = <PlaywrightSurfaceLab />;
+      break;
     case "Locator Lab":
       content = <LocatorLab />;
       break;
@@ -794,6 +1129,7 @@ function App() {
           <a
             href="https://github.com/DioxusLabs/wasm-bindgen-wry"
             target="_blank"
+            rel="noreferrer"
           >
             wasm-bindgen-wry
           </a>

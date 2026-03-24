@@ -44,11 +44,17 @@
   var import_react = __toESM(require_react());
   var import_client = __toESM(require_client());
   function createNativeBridge() {
-    if (window.NativeBridge) return window.NativeBridge.new();
-    throw new Error("Native bridge is not available");
+    const bridge = window.NativeBridge;
+    if (!bridge) throw new Error("Native bridge is not available");
+    const withFactory = bridge;
+    if (typeof withFactory.new === "function") {
+      return withFactory.new();
+    }
+    return new bridge();
   }
   function callNative(fn, ...args) {
-    const result = createNativeBridge()[fn](...args);
+    const bridge = createNativeBridge();
+    const result = bridge[fn](...args);
     if (typeof result === "string") {
       try {
         return JSON.parse(result);
@@ -58,6 +64,73 @@
     }
     return result;
   }
+  var LOCATOR_FRAME_SRC_DOC = `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body {
+        margin: 0;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #f8fafc;
+        color: #0f172a;
+      }
+      .frame-shell {
+        padding: 10px;
+      }
+      .frame-status {
+        margin: 0 0 8px;
+        font-size: 12px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+      .frame-button {
+        border: 0;
+        border-radius: 8px;
+        padding: 8px 12px;
+        background: #2563eb;
+        color: #fff;
+        font-size: 13px;
+        font-weight: 600;
+      }
+      .frame-count {
+        margin: 8px 0 0;
+        font-family: "SF Mono", "Fira Code", monospace;
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="frame-shell">
+      <p id="frame-status" class="frame-status">loading</p>
+      <button id="frame-action" class="frame-button" disabled>Frame action</button>
+      <p id="frame-title">Nested Frame</p>
+      <p id="frame-count" class="frame-count">0</p>
+    </div>
+    <script>
+      const status = document.getElementById("frame-status");
+      const action = document.getElementById("frame-action");
+      const count = document.getElementById("frame-count");
+      const notifyParent = () => {
+        parent.postMessage(
+          { kind: "locator-frame-state", status: status.textContent, count: count.textContent },
+          "*"
+        );
+      };
+      window.setTimeout(() => {
+        status.textContent = "ready";
+        action.disabled = false;
+        notifyParent();
+      }, 120);
+      action.addEventListener("click", () => {
+        count.textContent = String(Number(count.textContent || "0") + 1);
+        notifyParent();
+      });
+      notifyParent();
+    <\/script>
+  </body>
+</html>`;
   function Tabs({ items, active, onSelect }) {
     return /* @__PURE__ */ import_react.default.createElement("div", { className: "tabs" }, items.map((item) => /* @__PURE__ */ import_react.default.createElement(
       "button",
@@ -347,6 +420,30 @@
   function LocatorLab() {
     const [saved, setSaved] = (0, import_react.useState)(false);
     const [selectorState, setSelectorState] = (0, import_react.useState)("idle");
+    const [frameStatus, setFrameStatus] = (0, import_react.useState)("loading");
+    const [frameClickCount, setFrameClickCount] = (0, import_react.useState)(0);
+    const [delayedActionable, setDelayedActionable] = (0, import_react.useState)(false);
+    const [delayedClicked, setDelayedClicked] = (0, import_react.useState)(false);
+    (0, import_react.useEffect)(() => {
+      const onMessage = (event) => {
+        const data = event.data;
+        if (!data || data.kind !== "locator-frame-state") {
+          return;
+        }
+        if (typeof data.status === "string") {
+          setFrameStatus(data.status);
+        }
+        if (typeof data.count === "string") {
+          setFrameClickCount(Number(data.count));
+        }
+      };
+      const timer = window.setTimeout(() => setDelayedActionable(true), 500);
+      window.addEventListener("message", onMessage);
+      return () => {
+        window.removeEventListener("message", onMessage);
+        window.clearTimeout(timer);
+      };
+    }, []);
     return /* @__PURE__ */ import_react.default.createElement("div", { className: "card automation-card", id: "locator-lab" }, /* @__PURE__ */ import_react.default.createElement("h2", null, "Locator Lab"), /* @__PURE__ */ import_react.default.createElement("p", { className: "subtitle" }, "Deterministic fixtures for semantic locator coverage."), /* @__PURE__ */ import_react.default.createElement("div", { className: "lab-grid locator-grid" }, /* @__PURE__ */ import_react.default.createElement("section", { className: "lab-panel", id: "locator-label-panel" }, /* @__PURE__ */ import_react.default.createElement("h3", null, "Labels and Placeholders"), /* @__PURE__ */ import_react.default.createElement("div", { className: "row" }, /* @__PURE__ */ import_react.default.createElement("label", { className: "lab-label", id: "locator-name-label", htmlFor: "locator-name" }, "Full name"), /* @__PURE__ */ import_react.default.createElement(
       "input",
       {
@@ -416,13 +513,154 @@
         onClick: () => setSelectorState("gamma")
       },
       "Open Gamma"
-    ))), /* @__PURE__ */ import_react.default.createElement("p", { id: "selector-status", className: "lab-output" }, selectorState))));
+    ))), /* @__PURE__ */ import_react.default.createElement("p", { id: "selector-status", className: "lab-output" }, selectorState)), /* @__PURE__ */ import_react.default.createElement("section", { className: "lab-panel", id: "locator-frame-panel" }, /* @__PURE__ */ import_react.default.createElement("h3", null, "Iframe and Delayed Actionability"), /* @__PURE__ */ import_react.default.createElement("p", { className: "subtitle" }, "Nested same-origin content plus a delayed action target for proxy tests."), /* @__PURE__ */ import_react.default.createElement("div", { className: "frame-shell" }, /* @__PURE__ */ import_react.default.createElement(
+      "iframe",
+      {
+        id: "locator-frame",
+        title: "Nested action frame",
+        srcDoc: LOCATOR_FRAME_SRC_DOC
+      }
+    )), /* @__PURE__ */ import_react.default.createElement("div", { className: "lab-output-list" }, /* @__PURE__ */ import_react.default.createElement("p", { id: "locator-frame-status", className: "lab-output" }, frameStatus), /* @__PURE__ */ import_react.default.createElement("p", { id: "locator-frame-output", className: "lab-output" }, String(frameClickCount))), /* @__PURE__ */ import_react.default.createElement("div", { className: "locator-delayed-row" }, /* @__PURE__ */ import_react.default.createElement(
+      "button",
+      {
+        id: "locator-delayed-action",
+        className: "btn btn-sm",
+        hidden: !delayedActionable,
+        disabled: !delayedActionable,
+        onClick: () => setDelayedClicked(true)
+      },
+      "Delayed action"
+    ), /* @__PURE__ */ import_react.default.createElement("p", { id: "locator-delayed-output", className: "lab-output" }, delayedClicked ? "clicked" : delayedActionable ? "ready" : "waiting")))));
+  }
+  function PlaywrightSurfaceLab() {
+    const [hashValue, setHashValue] = (0, import_react.useState)(() => window.location.hash || "(none)");
+    const [networkProbe, setNetworkProbe] = (0, import_react.useState)("idle");
+    const [viewportValue, setViewportValue] = (0, import_react.useState)(() => `${window.innerWidth}x${window.innerHeight}`);
+    const [dialogOutput, setDialogOutput] = (0, import_react.useState)("idle");
+    const [keyboardOutput, setKeyboardOutput] = (0, import_react.useState)("none");
+    const [selectedFile, setSelectedFile] = (0, import_react.useState)("none");
+    const [geolocationOutput, setGeolocationOutput] = (0, import_react.useState)("not-run");
+    const [locatorOutput, setLocatorOutput] = (0, import_react.useState)("none");
+    (0, import_react.useEffect)(() => {
+      const onHashChange = () => setHashValue(window.location.hash || "(none)");
+      const onResize = () => setViewportValue(`${window.innerWidth}x${window.innerHeight}`);
+      onHashChange();
+      onResize();
+      window.addEventListener("hashchange", onHashChange);
+      window.addEventListener("resize", onResize);
+      return () => {
+        window.removeEventListener("hashchange", onHashChange);
+        window.removeEventListener("resize", onResize);
+      };
+    }, []);
+    const runNetworkProbe = async () => {
+      setNetworkProbe("running");
+      try {
+        const response = await fetch("data:text/plain,surface-network-probe");
+        const text = await response.text();
+        setNetworkProbe(text || "empty");
+      } catch (error) {
+        setNetworkProbe(error instanceof Error ? `error:${error.message}` : "error");
+      }
+    };
+    const runGeolocationProbe = () => {
+      if (!navigator.geolocation) {
+        setGeolocationOutput("unsupported");
+        return;
+      }
+      setGeolocationOutput("requesting");
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          setGeolocationOutput(
+            `${position.coords.latitude.toFixed(4)},${position.coords.longitude.toFixed(4)}`
+          );
+        },
+        () => {
+          setGeolocationOutput("denied");
+        }
+      );
+    };
+    const runDialogProbe = () => {
+      setDialogOutput("requested");
+      const response = window.confirm("Surface dialog probe");
+      setDialogOutput(response ? "confirmed" : "dismissed");
+    };
+    return /* @__PURE__ */ import_react.default.createElement("div", { className: "card automation-card", id: "surface-lab" }, /* @__PURE__ */ import_react.default.createElement("h2", null, "Playwright Surface Lab"), /* @__PURE__ */ import_react.default.createElement("p", { className: "subtitle" }, "Fixture surfaces for proxy parity expansion."), /* @__PURE__ */ import_react.default.createElement("div", { className: "lab-grid" }, /* @__PURE__ */ import_react.default.createElement("section", { className: "lab-panel", id: "surface-nav-panel" }, /* @__PURE__ */ import_react.default.createElement("h3", null, "Navigation"), /* @__PURE__ */ import_react.default.createElement("a", { id: "surface-nav-link", href: "#surface-anchor" }, "Go to hash anchor"), /* @__PURE__ */ import_react.default.createElement("p", { id: "surface-nav-output", className: "lab-output" }, hashValue), /* @__PURE__ */ import_react.default.createElement("p", { id: "surface-anchor", className: "lab-output" }, "surface anchor")), /* @__PURE__ */ import_react.default.createElement("section", { className: "lab-panel", id: "surface-network-panel" }, /* @__PURE__ */ import_react.default.createElement("h3", null, "Network Probe"), /* @__PURE__ */ import_react.default.createElement("button", { id: "surface-network-probe", className: "btn btn-sm", onClick: runNetworkProbe }, "Run fetch probe"), /* @__PURE__ */ import_react.default.createElement("p", { id: "surface-network-output", className: "lab-output" }, networkProbe)), /* @__PURE__ */ import_react.default.createElement("section", { className: "lab-panel", id: "surface-viewport-panel" }, /* @__PURE__ */ import_react.default.createElement("h3", null, "Viewport Surface"), /* @__PURE__ */ import_react.default.createElement("p", { id: "surface-viewport-output", className: "lab-output" }, viewportValue)), /* @__PURE__ */ import_react.default.createElement("section", { className: "lab-panel", id: "surface-keyboard-panel" }, /* @__PURE__ */ import_react.default.createElement("h3", null, "Keyboard Surface"), /* @__PURE__ */ import_react.default.createElement(
+      "input",
+      {
+        id: "surface-keyboard-input",
+        className: "lab-input",
+        placeholder: "Type here",
+        onKeyDown: (event) => {
+          const next = keyboardOutput === "none" ? event.key : `${keyboardOutput},${event.key}`;
+          setKeyboardOutput(next.split(",").slice(-8).join(","));
+        }
+      }
+    ), /* @__PURE__ */ import_react.default.createElement("p", { id: "surface-keyboard-output", className: "lab-output" }, keyboardOutput)), /* @__PURE__ */ import_react.default.createElement("section", { className: "lab-panel", id: "surface-chooser-panel" }, /* @__PURE__ */ import_react.default.createElement("h3", null, "Chooser Surface"), /* @__PURE__ */ import_react.default.createElement(
+      "input",
+      {
+        id: "surface-file-input",
+        type: "file",
+        onChange: (event) => {
+          var _a, _b;
+          const file = (_a = event.target.files) == null ? void 0 : _a[0];
+          setSelectedFile((_b = file == null ? void 0 : file.name) != null ? _b : "none");
+        }
+      }
+    ), /* @__PURE__ */ import_react.default.createElement("p", { id: "surface-file-output", className: "lab-output" }, selectedFile)), /* @__PURE__ */ import_react.default.createElement("section", { className: "lab-panel", id: "surface-geolocation-panel" }, /* @__PURE__ */ import_react.default.createElement("h3", null, "Geolocation Surface"), /* @__PURE__ */ import_react.default.createElement(
+      "button",
+      {
+        id: "surface-geolocation-query",
+        className: "btn btn-sm",
+        onClick: runGeolocationProbe
+      },
+      "Query geolocation"
+    ), /* @__PURE__ */ import_react.default.createElement("p", { id: "surface-geolocation-output", className: "lab-output" }, geolocationOutput)), /* @__PURE__ */ import_react.default.createElement("section", { className: "lab-panel", id: "surface-dialog-panel" }, /* @__PURE__ */ import_react.default.createElement("h3", null, "Dialog Surface"), /* @__PURE__ */ import_react.default.createElement(
+      "button",
+      {
+        id: "surface-dialog-button",
+        className: "btn btn-sm",
+        onClick: runDialogProbe
+      },
+      "Open dialog"
+    ), /* @__PURE__ */ import_react.default.createElement("p", { id: "surface-dialog-output", className: "lab-output" }, dialogOutput)), /* @__PURE__ */ import_react.default.createElement("section", { className: "lab-panel", id: "surface-locator-panel" }, /* @__PURE__ */ import_react.default.createElement("h3", null, "Locator Surface"), /* @__PURE__ */ import_react.default.createElement("div", { id: "surface-locator-list", role: "list" }, /* @__PURE__ */ import_react.default.createElement(
+      "button",
+      {
+        id: "surface-locator-alpha",
+        className: "btn btn-sm",
+        role: "listitem",
+        "aria-label": "surface locator alpha",
+        onClick: () => setLocatorOutput("alpha")
+      },
+      "Open Surface Alpha"
+    ), /* @__PURE__ */ import_react.default.createElement(
+      "button",
+      {
+        id: "surface-locator-beta",
+        className: "btn btn-sm",
+        role: "listitem",
+        "aria-label": "surface locator beta",
+        onClick: () => setLocatorOutput("beta")
+      },
+      "Open Surface Beta"
+    ), /* @__PURE__ */ import_react.default.createElement(
+      "button",
+      {
+        id: "surface-locator-gamma",
+        className: "btn btn-sm",
+        role: "listitem",
+        "aria-label": "surface locator gamma",
+        onClick: () => setLocatorOutput("gamma")
+      },
+      "Open Surface Gamma"
+    )), /* @__PURE__ */ import_react.default.createElement("p", { id: "surface-locator-output", className: "lab-output" }, locatorOutput)), /* @__PURE__ */ import_react.default.createElement("section", { className: "lab-panel", id: "surface-shot-panel" }, /* @__PURE__ */ import_react.default.createElement("h3", null, "Screenshot Surface"), /* @__PURE__ */ import_react.default.createElement("div", { id: "surface-screenshot-target", className: "surface-shot-target" }, "Screenshot target"))));
   }
   var TAB_NAMES = [
     "System Info",
     "Fibonacci",
     "File Explorer",
     "Counter",
+    "Playwright Surface Lab",
     "Locator Lab",
     "Automation Lab"
   ];
@@ -445,6 +683,9 @@
       case "Counter":
         content = /* @__PURE__ */ import_react.default.createElement(Counter, null);
         break;
+      case "Playwright Surface Lab":
+        content = /* @__PURE__ */ import_react.default.createElement(PlaywrightSurfaceLab, null);
+        break;
       case "Locator Lab":
         content = /* @__PURE__ */ import_react.default.createElement(LocatorLab, null);
         break;
@@ -456,7 +697,8 @@
       "a",
       {
         href: "https://github.com/DioxusLabs/wasm-bindgen-wry",
-        target: "_blank"
+        target: "_blank",
+        rel: "noreferrer"
       },
       "wasm-bindgen-wry"
     ))), /* @__PURE__ */ import_react.default.createElement(Tabs, { items: TAB_NAMES, active: tab, onSelect: setTab }), /* @__PURE__ */ import_react.default.createElement("main", { className: "main" }, content));

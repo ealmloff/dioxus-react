@@ -1,13 +1,19 @@
-import net from "node:net";
+import * as net from "node:net";
 
 interface PendingEntry {
   resolve(value: unknown): void;
   reject(error: Error): void;
 }
 
+interface BridgeResponse {
+  id?: number;
+  error?: string;
+  result?: unknown;
+}
+
 export class TestBridge {
   readonly port: number;
-  private socket: any = null;
+  private socket: net.Socket | null = null;
   private buffer = "";
   private nextId = 1;
   private pending = new Map<number, PendingEntry>();
@@ -37,7 +43,7 @@ export class TestBridge {
       socket.once("connect", () => {
         this.socket = socket;
         socket.setEncoding("utf-8");
-        socket.on("data", (chunk: string) => this.onData(chunk));
+        socket.on("data", (chunk: unknown) => this.onData(String(chunk)));
         resolve();
       });
       socket.once("error", reject);
@@ -57,7 +63,10 @@ export class TestBridge {
 
       if (line.trim() !== "") {
         try {
-          const parsed = JSON.parse(line);
+          const parsed = JSON.parse(line) as BridgeResponse;
+          if (typeof parsed.id !== "number") {
+            continue;
+          }
           const pending = this.pending.get(parsed.id);
           if (!pending) {
             continue;
@@ -98,7 +107,7 @@ export class TestBridge {
 
   async evalJson(js: string): Promise<unknown> {
     const raw = await this.eval(js);
-    return JSON.parse(String(raw));
+    return typeof raw === "string" ? JSON.parse(raw) : raw;
   }
 
   close(): void {

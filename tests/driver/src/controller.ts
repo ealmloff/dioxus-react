@@ -2,9 +2,22 @@ import { spawn } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 import { BIN, ROOT, randomPort } from "./constants";
 import { TestBridge } from "./bridge";
-import { deserializeBridgeValue, TargetClosedError, TimeoutError } from "./internals";
+import {
+  deserializeBridgeValue,
+  serializeProtocolValue,
+  TargetClosedError,
+  TimeoutError,
+} from "./internals";
 import { RUNTIME_BOOTSTRAP } from "./runtime";
+import {
+  CompatBrowserContext,
+  CompatElementHandle,
+  type CompatFrame,
+  type CompatJSHandle,
+  type CompatPage,
+} from "./compat";
 import type {
+  FrameMeta,
   HandleMeta,
   PropertyHandleEntry,
   SerializedArgument,
@@ -15,8 +28,13 @@ interface ControllerOptions {
   appPort?: number;
 }
 
-interface WaitForSelectorHidden {
-  hidden: true;
+interface ExpectOptions {
+  timeout?: number;
+  selector?: string;
+  expression?: string;
+  isNot?: boolean;
+  expectedValue?: SerializedArgument;
+  [key: string]: unknown;
 }
 
 interface BrowserLogEntry {
@@ -31,19 +49,28 @@ interface ProcessLogEntry {
   category: "process" | "js-log" | "js-error";
 }
 
-function isHiddenWaitResult(value: unknown): value is WaitForSelectorHidden {
-  return !!value && typeof value === "object" && "hidden" in value;
-}
-
 function titleFromHtml(html: string): string {
   const match = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
   return match ? match[1] : "";
 }
 
+function isRuntimeHandleReference(value: unknown): value is { __pwRuntimeHandleId: number } {
+  return (
+    !!value &&
+    typeof value === "object" &&
+    "__pwRuntimeHandleId" in value &&
+    typeof (value as { __pwRuntimeHandleId?: unknown }).__pwRuntimeHandleId === "number"
+  );
+}
+
 export class ProxyAppController {
+  readonly mainFrameId = 1;
   readonly appPort: number;
-  private app: any = null;
+  private app: ReturnType<typeof spawn> | null = null;
   private bridge: TestBridge | null = null;
+  private bridgeCallQueue: Promise<void> = Promise.resolve();
+  private runtimeInstalled = false;
+  private runtimeInstallPromise: Promise<void> | null = null;
   private stopped = false;
   private appExitInfo: { code: number | null; signal: string | null } | null = null;
   private processLogs: ProcessLogEntry[] = [];
@@ -56,13 +83,79 @@ export class ProxyAppController {
     title: "",
     viewportSize: { width: 0, height: 0 },
   };
+  private compatContext: CompatBrowserContext;
+  private compatPage: CompatPage;
+  private knownFrames = new Map<number, FrameMeta>();
 
   constructor({ appPort = randomPort() }: ControllerOptions = {}) {
     this.appPort = appPort;
+    this.compatContext = new CompatBrowserContext(this);
+    this.compatPage = this.compatContext.page();
+    this.knownFrames.set(this.mainFrameId, {
+      id: this.mainFrameId,
+      url: this.lastSnapshot.url,
+      name: "",
+      parentFrameId: null,
+    });
   }
 
   get snapshotState(): Snapshot {
     return this.lastSnapshot;
+  }
+
+  private resetCompatState(): void {
+    const testIdAttributeName = this.compatContext.selectors().testIdAttributeName();
+    this.compatContext = new CompatBrowserContext(this);
+    this.compatContext.setTestIdAttributeName(testIdAttributeName);
+    this.compatPage = this.compatContext.page();
+    this.knownFrames.clear();
+    this.knownFrames.set(this.mainFrameId, {
+      id: this.mainFrameId,
+      url: this.lastSnapshot.url,
+      name: "",
+      parentFrameId: null,
+    });
+  }
+
+  frameInfoSync(frameId: number): FrameMeta {
+    return (
+      this.knownFrames.get(frameId) ?? {
+        id: frameId,
+        url: frameId === this.mainFrameId ? this.lastSnapshot.url : "about:blank",
+        name: "",
+        parentFrameId: null,
+      }
+    );
+  }
+
+  private rememberFrame(frame: FrameMeta): FrameMeta {
+    this.knownFrames.set(frame.id, frame);
+    return frame;
+  }
+
+  private compatFrame(frameId = this.mainFrameId): CompatFrame {
+    return this.compatPage.frame(frameId, this.frameInfoSync(frameId));
+  }
+
+  private async compatFrameForHandle(handleId: number): Promise<CompatFrame> {
+    const frame = await this.ownerFrameInfo(handleId);
+    return this.compatFrame(frame?.id ?? this.mainFrameId);
+  }
+
+  private async compatScopeHandle(
+    rootHandleId: number | null,
+    _defaultFrameId = this.mainFrameId
+  ): Promise<CompatElementHandle | undefined> {
+    if (!rootHandleId) {
+      return undefined;
+    }
+    const frame = await this.compatFrameForHandle(rootHandleId);
+    return frame.scopeHandle({
+      id: rootHandleId,
+      type: "element",
+      preview: "ElementHandle",
+      frameId: frame.id,
+    });
   }
 
   async start(): Promise<void> {
@@ -70,6 +163,7 @@ export class ProxyAppController {
       console.error(`[controller] start appPort=${this.appPort}`);
     }
     this.stopped = false;
+    this.invalidateRuntime();
     this.appExitInfo = null;
     this.processLogs = [];
     this.processLogBuffers = { stdout: "", stderr: "" };
@@ -103,6 +197,7 @@ export class ProxyAppController {
     if (process.env.DEBUG) {
       console.error("[controller] app ready");
     }
+    this.resetCompatState();
   }
 
   async close(): Promise<void> {
@@ -119,7 +214,13 @@ export class ProxyAppController {
     await this.start();
   }
 
+  private invalidateRuntime(): void {
+    this.runtimeInstalled = false;
+    this.runtimeInstallPromise = null;
+  }
+
   private async shutdownApp(): Promise<void> {
+    this.invalidateRuntime();
     this.bridge?.close();
     this.bridge = null;
 
@@ -201,29 +302,46 @@ export class ProxyAppController {
     return "process";
   }
 
-  async evalValue(script: string): Promise<any> {
-    if (!this.bridge) {
-      throw new TargetClosedError("Embedded app bridge is not connected");
-    }
+  async evalValue(script: string): Promise<unknown> {
+    return await this.withSerializedBridgeCall(async () => {
+      if (!this.bridge) {
+        throw new TargetClosedError("Embedded app bridge is not connected");
+      }
 
-    let raw: string;
+      let raw: string;
+      try {
+        raw = String(await this.bridge.eval(script));
+      } catch (error) {
+        throw await this.decorateRuntimeError(error);
+      }
+      const value = deserializeBridgeValue(JSON.parse(String(raw)));
+      const bridgeError =
+        value && typeof value === "object"
+          ? (value as { __error?: string; __stack?: string })
+          : null;
+      if (bridgeError?.__error) {
+        const error = new Error(bridgeError.__error);
+        error.stack = bridgeError.__stack || error.stack;
+        throw await this.decorateRuntimeError(error);
+      }
+
+      return value;
+    });
+  }
+
+  private async withSerializedBridgeCall<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.bridgeCallQueue;
+    let release: (() => void) | undefined;
+    this.bridgeCallQueue = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    await previous.catch(() => {});
     try {
-      raw = String(await this.bridge.eval(script));
-    } catch (error) {
-      throw await this.decorateRuntimeError(error);
+      return await operation();
+    } finally {
+      release?.();
     }
-    const value = deserializeBridgeValue(JSON.parse(String(raw)));
-    const bridgeError =
-      value && typeof value === "object"
-        ? (value as { __error?: string; __stack?: string })
-        : null;
-    if (bridgeError?.__error) {
-      const error = new Error(bridgeError.__error);
-      error.stack = bridgeError.__stack || error.stack;
-      throw await this.decorateRuntimeError(error);
-    }
-
-    return value;
   }
 
   async waitFor<T>(
@@ -376,15 +494,49 @@ export class ProxyAppController {
   }
 
   async ensureRuntime(): Promise<void> {
-    await this.evalValue(RUNTIME_BOOTSTRAP);
+    if (this.runtimeInstalled) {
+      return;
+    }
+
+    if (this.runtimeInstallPromise) {
+      await this.runtimeInstallPromise;
+      return;
+    }
+
+    const installPromise = (async () => {
+      await this.evalValue(RUNTIME_BOOTSTRAP);
+      this.runtimeInstalled = true;
+    })();
+    this.runtimeInstallPromise = installPromise;
+
+    try {
+      await installPromise;
+    } catch (error) {
+      this.runtimeInstalled = false;
+      throw error;
+    } finally {
+      if (this.runtimeInstallPromise === installPromise) {
+        this.runtimeInstallPromise = null;
+      }
+    }
   }
 
-  async runtimeCall(method: string, payload: Record<string, unknown> = {}): Promise<any> {
+  async runtimeCall<T = unknown>(method: string, payload: Record<string, unknown> = {}): Promise<T> {
     await this.ensureRuntime();
-    return await this.evalValue(`(() => {
-      const payload = ${JSON.stringify(payload)};
+    const handleIds: number[] = [];
+    const serializedPayload = serializeProtocolValue(payload, (value: unknown) => {
+      if (isRuntimeHandleReference(value)) {
+        return { h: handleIds.push(value.__pwRuntimeHandleId) - 1 };
+      }
+      return { fallThrough: value };
+    });
+    return (await this.evalValue(`(() => {
+      const payload = window.__pwProxy.deserializeValue(
+        ${JSON.stringify(serializedPayload)},
+        ${JSON.stringify(handleIds)}
+      );
       return window.__pwProxy[${JSON.stringify(method)}](payload);
-    })()`);
+    })()`)) as T;
   }
 
   private handleIds(handles: Array<{ handleId: number }> = []): number[] {
@@ -401,23 +553,200 @@ export class ProxyAppController {
     };
   }
 
+  private serializeArgumentValue(value: unknown): SerializedArgument {
+    const handles: Array<{ handleId: number }> = [];
+    const serializedValue = serializeProtocolValue(value, (candidate: unknown) => {
+      if (isRuntimeHandleReference(candidate)) {
+        return { h: handles.push({ handleId: candidate.__pwRuntimeHandleId }) - 1 };
+      }
+      return { fallThrough: candidate };
+    });
+    return {
+      value: serializedValue,
+      handles,
+    };
+  }
+
+  private async runElementAction<T>(
+    frameId: number,
+    handleId: number,
+    action: string,
+    payload: Record<string, unknown> = {}
+  ): Promise<T> {
+    return (await this.evaluateExpression(
+      `(payload) => {
+        if (!window.__pwProxy || typeof window.__pwProxy.runElementAction !== "function") {
+          throw new Error("Playwright proxy runtime action helper is not installed");
+        }
+        return window.__pwProxy.runElementAction(payload.element, payload.action, payload);
+      }`,
+      true,
+      this.serializeArgumentValue({
+        action,
+        element: { __pwRuntimeHandleId: handleId },
+        ...payload,
+      }),
+      frameId
+    )) as T;
+  }
+
+  private async runSelectorAction<T>(
+    frameId: number,
+    action: "fill" | "type" | "press" | "selectOption" | "inputValue" | "textContent",
+    selector: string,
+    rootHandleId: number | null,
+    strict: boolean | undefined,
+    payload: Record<string, unknown> = {}
+  ): Promise<T> {
+    const commandPayload = {
+      frameId,
+      selector,
+      rootHandleId,
+      strict: !!strict,
+      optionHandleIds: [] as number[],
+      ...payload,
+    };
+    return (await this.evaluateExpression(
+      `() => {
+        if (!window.__pwProxy) {
+          throw new Error("Playwright proxy runtime is not installed");
+        }
+        const command = window.__pwProxy[${JSON.stringify(action)}];
+        if (typeof command !== "function") {
+          throw new Error("Playwright proxy action command is not available");
+        }
+        return command(${JSON.stringify(commandPayload)});
+      }`,
+      true,
+      this.serializeArgumentValue(undefined),
+      frameId
+    )) as T;
+  }
+
+  private async deserializeArgumentInFrame(
+    arg: SerializedArgument | undefined,
+    frameId: number
+  ): Promise<unknown> {
+    if (!arg) {
+      return undefined;
+    }
+    return await this.evaluateExpression("(arg) => arg", true, arg, frameId);
+  }
+
   async snapshot(): Promise<Snapshot> {
-    const url = await this.evalValue("location.href");
-    const title = await this.evalValue("document.title");
-    const viewportSize = await this.evalValue(
+    const url = (await this.evalValue("location.href")) as string;
+    const title = (await this.evalValue("document.title")) as string;
+    const viewportSize = (await this.evalValue(
       "({ width: window.innerWidth, height: window.innerHeight })"
-    );
+    )) as { width: number; height: number };
 
     this.lastSnapshot = { url, title, viewportSize };
+    this.rememberFrame({
+      id: this.mainFrameId,
+      url,
+      name: "",
+      parentFrameId: null,
+    });
     return this.lastSnapshot;
+  }
+
+  async frameInfo(frameId: number): Promise<FrameMeta> {
+    return this.rememberFrame(await this.runtimeCall<FrameMeta>("frameInfo", { frameId }));
+  }
+
+  async getContentFrame(handleId: number): Promise<FrameMeta | null> {
+    const frame = await this.runtimeCall<FrameMeta | null>("getContentFrame", { handleId });
+    return frame ? this.rememberFrame(frame) : null;
+  }
+
+  async contentFrameInfo(handleId: number): Promise<FrameMeta | null> {
+    return await this.getContentFrame(handleId);
+  }
+
+  async ownerFrameInfo(handleId: number): Promise<FrameMeta | null> {
+    const frame = await this.runtimeCall<FrameMeta | null>("getOwnerFrame", { handleId });
+    return frame ? this.rememberFrame(frame) : null;
+  }
+
+  async injectedScriptHandle(frameId: number): Promise<HandleMeta> {
+    return await this.runtimeCall<HandleMeta>("getInjectedScriptHandle", { frameId });
+  }
+
+  async cloneHandle(handleId: number): Promise<HandleMeta> {
+    return await this.runtimeCall<HandleMeta>("cloneHandle", { handleId });
+  }
+
+  async generateSelector(handleId: number): Promise<string> {
+    return await this.runtimeCall<string>("generateSelector", { handleId });
+  }
+
+  private async compatQuery(
+    frameId: number,
+    selector: string,
+    rootHandleId: number | null,
+    strict?: boolean
+  ): Promise<CompatElementHandle | null> {
+    const frame = this.compatFrame(frameId);
+    const scope = await this.compatScopeHandle(rootHandleId, frameId);
+    return (await frame.selectors.query(selector, { strict: !!strict }, scope)) as CompatElementHandle | null;
+  }
+
+  private async compatQueryAll(
+    frameId: number,
+    selector: string,
+    rootHandleId: number | null
+  ): Promise<CompatElementHandle[]> {
+    const frame = this.compatFrame(frameId);
+    const scope = await this.compatScopeHandle(rootHandleId, frameId);
+    return (await frame.selectors.queryAll(selector, scope)) as CompatElementHandle[];
+  }
+
+  private async selectorHandleMeta(
+    frameId: number,
+    selector: string,
+    rootHandleId: number | null,
+    strict?: boolean
+  ): Promise<HandleMeta | null> {
+    const handle = await this.compatQuery(frameId, selector, rootHandleId, strict);
+    return handle?.meta ?? null;
+  }
+
+  private async requiredSelectorHandleMeta(
+    frameId: number,
+    selector: string,
+    rootHandleId: number | null,
+    strict?: boolean
+  ): Promise<HandleMeta> {
+    const handle = await this.selectorHandleMeta(frameId, selector, rootHandleId, strict);
+    if (!handle) {
+      throw new Error("Target not found");
+    }
+    return handle;
+  }
+
+  private async withTransientSelectorHandle<T>(
+    frameId: number,
+    selector: string,
+    rootHandleId: number | null,
+    strict: boolean | undefined,
+    callback: (handle: HandleMeta) => Promise<T>
+  ): Promise<T> {
+    const handle = await this.requiredSelectorHandleMeta(frameId, selector, rootHandleId, strict);
+    try {
+      return await callback(handle);
+    } finally {
+      await this.disposeHandle(handle.id).catch(() => {});
+    }
   }
 
   async evaluateExpression(
     expression: string,
     isFunction: boolean,
-    arg: SerializedArgument
+    arg: SerializedArgument,
+    frameId = 1
   ): Promise<unknown> {
-    return await this.runtimeCall("evaluate", {
+    return await this.runtimeCall<unknown>("evaluate", {
+      frameId,
       expression,
       isFunction,
       ...this.payloadFromArg(arg),
@@ -427,9 +756,11 @@ export class ProxyAppController {
   async evaluateExpressionHandle(
     expression: string,
     isFunction: boolean,
-    arg: SerializedArgument
+    arg: SerializedArgument,
+    frameId = 1
   ): Promise<HandleMeta> {
-    return await this.runtimeCall("evaluateHandle", {
+    return await this.runtimeCall<HandleMeta>("evaluateHandle", {
+      frameId,
       expression,
       isFunction,
       ...this.payloadFromArg(arg),
@@ -442,7 +773,7 @@ export class ProxyAppController {
     isFunction: boolean,
     arg: SerializedArgument
   ): Promise<unknown> {
-    return await this.runtimeCall("evaluateOnHandle", {
+    return await this.runtimeCall<unknown>("evaluateOnHandle", {
       handleId,
       expression,
       isFunction,
@@ -456,7 +787,7 @@ export class ProxyAppController {
     isFunction: boolean,
     arg: SerializedArgument
   ): Promise<HandleMeta> {
-    return await this.runtimeCall("evaluateHandleOnHandle", {
+    return await this.runtimeCall<HandleMeta>("evaluateHandleOnHandle", {
       handleId,
       expression,
       isFunction,
@@ -469,13 +800,15 @@ export class ProxyAppController {
     isFunction: boolean,
     arg: SerializedArgument,
     timeout?: number,
-    pollingInterval?: number
+    pollingInterval?: number,
+    frameId = 1
   ): Promise<HandleMeta> {
     const deadline = timeout ? Date.now() + timeout : Infinity;
     const intervalMs = pollingInterval ?? 16;
 
     while (Date.now() < deadline) {
-      const result = await this.runtimeCall("waitForFunctionStep", {
+      const result = await this.runtimeCall<HandleMeta | null>("waitForFunctionStep", {
+        frameId,
         expression,
         isFunction,
         ...this.payloadFromArg(arg),
@@ -491,21 +824,25 @@ export class ProxyAppController {
   }
 
   async querySelector(
+    frameId: number,
     selector: string,
     rootHandleId: number | null,
     strict?: boolean
   ): Promise<HandleMeta | null> {
-    return await this.runtimeCall("querySelector", { selector, rootHandleId, strict: !!strict });
+    return await this.selectorHandleMeta(frameId, selector, rootHandleId, strict);
   }
 
   async querySelectorAll(
+    frameId: number,
     selector: string,
     rootHandleId: number | null
   ): Promise<HandleMeta[]> {
-    return await this.runtimeCall("querySelectorAll", { selector, rootHandleId });
+    const handles = await this.compatQueryAll(frameId, selector, rootHandleId);
+    return handles.map((handle) => handle.meta);
   }
 
   async waitForSelector(
+    frameId: number,
     selector: string,
     rootHandleId: number | null,
     state?: string,
@@ -513,17 +850,36 @@ export class ProxyAppController {
     strict?: boolean
   ): Promise<HandleMeta | null> {
     const deadline = timeout ? Date.now() + timeout : Date.now() + 30_000;
+    const stateName = state ?? "visible";
 
     while (Date.now() < deadline) {
-      const result = await this.runtimeCall("waitForSelectorStep", {
-        selector,
-        rootHandleId,
-        state,
-        strict: !!strict,
-      });
-
-      if (result) {
-        return isHiddenWaitResult(result) ? null : result;
+      const handle = await this.selectorHandleMeta(frameId, selector, rootHandleId, strict);
+      if (stateName === "attached") {
+        if (handle) {
+          return handle;
+        }
+      } else if (stateName === "detached") {
+        if (!handle) {
+          return null;
+        }
+      } else if (stateName === "hidden") {
+        if (!handle) {
+          return null;
+        }
+        const hidden = await this.boolState("isHidden", null, null, handle.id, false, frameId);
+        if (hidden) {
+          await this.disposeHandle(handle.id).catch(() => {});
+          return null;
+        }
+        await this.disposeHandle(handle.id).catch(() => {});
+      } else {
+        if (handle) {
+          const visible = await this.boolState("isVisible", null, null, handle.id, false, frameId);
+          if (visible) {
+            return handle;
+          }
+          await this.disposeHandle(handle.id).catch(() => {});
+        }
       }
       await sleep(50);
     }
@@ -532,6 +888,7 @@ export class ProxyAppController {
   }
 
   async evalOnSelector(
+    frameId: number,
     selector: string,
     rootHandleId: number | null,
     expression: string,
@@ -539,55 +896,71 @@ export class ProxyAppController {
     arg: SerializedArgument,
     strict?: boolean
   ): Promise<unknown> {
-    return await this.runtimeCall("evalOnSelector", {
+    return await this.withTransientSelectorHandle(
+      frameId,
       selector,
       rootHandleId,
-      strict: !!strict,
-      expression,
-      isFunction,
-      ...this.payloadFromArg(arg),
-    });
+      strict,
+      async (handle) =>
+        await this.evaluateOnHandle(handle.id, expression, isFunction, arg)
+    );
   }
 
   async evalOnSelectorAll(
+    frameId: number,
     selector: string,
     rootHandleId: number | null,
     expression: string,
     isFunction: boolean,
     arg: SerializedArgument
   ): Promise<unknown> {
-    return await this.runtimeCall("evalOnSelectorAll", {
+    const frame = this.compatFrame(frameId);
+    const scope = await this.compatScopeHandle(rootHandleId, frameId);
+    const arrayHandle = (await frame.selectors.queryArrayInMainWorld(
       selector,
-      rootHandleId,
-      expression,
-      isFunction,
-      ...this.payloadFromArg(arg),
-    });
+      scope
+    )) as CompatJSHandle;
+    try {
+      return await this.evaluateOnHandle(arrayHandle.handleId, expression, isFunction, arg);
+    } finally {
+      arrayHandle.dispose();
+    }
   }
 
   async handleJsonValue(handleId: number): Promise<unknown> {
-    return await this.runtimeCall("jsonValue", { handleId });
+    return await this.runtimeCall<unknown>("jsonValue", { handleId });
   }
 
   async disposeHandle(handleId: number): Promise<void> {
-    await this.runtimeCall("disposeHandle", { handleId });
+    await this.runtimeCall<void>("disposeHandle", { handleId });
   }
 
   async getHandleProperty(handleId: number, name: string): Promise<HandleMeta> {
-    return await this.runtimeCall("getProperty", { handleId, name });
+    return await this.runtimeCall<HandleMeta>("getProperty", { handleId, name });
   }
 
   async getHandleProperties(handleId: number): Promise<PropertyHandleEntry[]> {
-    return await this.runtimeCall("getPropertyList", { handleId });
+    return await this.runtimeCall<PropertyHandleEntry[]>("getPropertyList", { handleId });
   }
 
   async textContent(
     selector: string | null,
     rootHandleId: number | null,
     handleId: number | null,
-    strict?: boolean
+    strict?: boolean,
+    frameId = 1
   ): Promise<string | null> {
-    return await this.runtimeCall("textContent", {
+    if (selector) {
+      return await this.runSelectorAction<string | null>(
+        frameId,
+        "textContent",
+        selector,
+        rootHandleId,
+        strict
+      );
+    }
+    return await this.runtimeCall<string | null>("textContent", {
+      frameId,
       selector,
       rootHandleId,
       handleId,
@@ -599,9 +972,20 @@ export class ProxyAppController {
     selector: string | null,
     rootHandleId: number | null,
     handleId: number | null,
-    strict?: boolean
+    strict?: boolean,
+    frameId = 1
   ): Promise<string> {
-    return await this.runtimeCall("innerText", {
+    if (selector) {
+      return await this.withTransientSelectorHandle(
+        frameId,
+        selector,
+        rootHandleId,
+        strict,
+        async (handle) => await this.innerText(null, null, handle.id, false, frameId)
+      );
+    }
+    return await this.runtimeCall<string>("innerText", {
+      frameId,
       selector,
       rootHandleId,
       handleId,
@@ -613,9 +997,20 @@ export class ProxyAppController {
     selector: string | null,
     rootHandleId: number | null,
     handleId: number | null,
-    strict?: boolean
+    strict?: boolean,
+    frameId = 1
   ): Promise<string> {
-    return await this.runtimeCall("innerHTML", {
+    if (selector) {
+      return await this.withTransientSelectorHandle(
+        frameId,
+        selector,
+        rootHandleId,
+        strict,
+        async (handle) => await this.innerHTML(null, null, handle.id, false, frameId)
+      );
+    }
+    return await this.runtimeCall<string>("innerHTML", {
+      frameId,
       selector,
       rootHandleId,
       handleId,
@@ -628,9 +1023,22 @@ export class ProxyAppController {
     rootHandleId: number | null,
     handleId: number | null,
     name: string,
-    strict?: boolean
+    strict?: boolean,
+    frameId = 1
   ): Promise<string | null> {
-    return await this.runtimeCall("getAttribute", {
+    if (selector) {
+      const handle = await this.selectorHandleMeta(frameId, selector, rootHandleId, strict);
+      if (!handle) {
+        return null;
+      }
+      try {
+        return await this.getAttribute(null, null, handle.id, name, false, frameId);
+      } finally {
+        await this.disposeHandle(handle.id).catch(() => {});
+      }
+    }
+    return await this.runtimeCall<string | null>("getAttribute", {
+      frameId,
       selector,
       rootHandleId,
       handleId,
@@ -643,9 +1051,20 @@ export class ProxyAppController {
     selector: string | null,
     rootHandleId: number | null,
     handleId: number | null,
-    strict?: boolean
+    strict?: boolean,
+    frameId = 1
   ): Promise<string> {
-    return await this.runtimeCall("inputValue", {
+    if (selector) {
+      return await this.runSelectorAction<string>(
+        frameId,
+        "inputValue",
+        selector,
+        rootHandleId,
+        strict
+      );
+    }
+    return await this.runtimeCall<string>("inputValue", {
+      frameId,
       selector,
       rootHandleId,
       handleId,
@@ -653,44 +1072,88 @@ export class ProxyAppController {
     });
   }
 
-  async queryCount(selector: string, rootHandleId: number | null): Promise<number> {
-    return await this.runtimeCall("queryCount", { selector, rootHandleId });
+  async queryCount(frameId: number, selector: string, rootHandleId: number | null): Promise<number> {
+    return await this.runtimeCall<number>("queryCount", {
+      frameId,
+      selector,
+      rootHandleId,
+    });
   }
 
-  async resolveSelector(selector: string, rootHandleId: number | null): Promise<string> {
-    const result = await this.runtimeCall("resolveSelector", { selector, rootHandleId });
-    return result.resolvedSelector;
+  async resolveSelector(frameId: number, selector: string, rootHandleId: number | null): Promise<string> {
+    return await this.withTransientSelectorHandle(
+      frameId,
+      selector,
+      rootHandleId,
+      true,
+      async (handle) => await this.generateSelector(handle.id)
+    );
   }
 
-  async highlight(selector: string, rootHandleId: number | null): Promise<void> {
-    await this.runtimeCall("highlight", { selector, rootHandleId });
+  async highlight(frameId: number, selector: string, rootHandleId: number | null): Promise<void> {
+    const frame = this.compatFrame(frameId);
+    const scope = await this.compatScopeHandle(rootHandleId, frameId);
+    const resolved = await frame.selectors.resolveInjectedForSelector(selector, { strict: false }, scope);
+    if (!resolved) {
+      return;
+    }
+    await resolved.injected.evaluate(
+      (
+        injected: { highlight: (selector: unknown) => void },
+        payload: { info: { parsed: unknown } }
+      ) => {
+        injected.highlight(payload.info.parsed);
+      },
+      { info: resolved.info }
+    );
   }
 
   async content(): Promise<string> {
-    return await this.runtimeCall("content");
+    return await this.runtimeCall<string>("content");
+  }
+
+  async frameContent(frameId: number): Promise<string> {
+    return await this.runtimeCall<string>("frameContent", { frameId });
   }
 
   async setTestIdAttributeName(testIdAttributeName: string): Promise<void> {
-    await this.runtimeCall("setTestIdAttributeName", { testIdAttributeName });
+    this.compatContext.setTestIdAttributeName(testIdAttributeName);
+    await this.runtimeCall<void>("setTestIdAttributeName", { testIdAttributeName });
   }
 
   async setContent(html: string): Promise<void> {
     await this.ensureRuntime();
-    await this.runtimeCall("resetHandles");
+    await this.runtimeCall<boolean>("resetHandles");
     await this.evalValue(`(() => {
+      function executeInsertedScripts(root) {
+        const scripts = Array.from(root.querySelectorAll("script"));
+        for (const oldScript of scripts) {
+          const script = document.createElement("script");
+          for (const attr of oldScript.attributes) {
+            script.setAttribute(attr.name, attr.value);
+          }
+          script.textContent = oldScript.textContent;
+          oldScript.replaceWith(script);
+        }
+      }
+
       const html = ${JSON.stringify(html)};
       const hasDocumentMarkup = /<!doctype|<html|<head|<body/i.test(html);
       if (hasDocumentMarkup) {
         const nextDocument = new DOMParser().parseFromString(html, "text/html");
         document.head.innerHTML = nextDocument.head.innerHTML;
         document.body.innerHTML = nextDocument.body.innerHTML;
+        executeInsertedScripts(document.head);
+        executeInsertedScripts(document.body);
         document.title = nextDocument.title;
       } else {
         document.body.innerHTML = html;
+        executeInsertedScripts(document.body);
         document.title = "";
       }
       return null;
     })()`);
+    this.invalidateRuntime();
     await this.ensureRuntime();
     this.lastSnapshot = {
       ...this.lastSnapshot,
@@ -699,65 +1162,288 @@ export class ProxyAppController {
   }
 
   async title(): Promise<string> {
-    return await this.runtimeCall("title");
+    return await this.runtimeCall<string>("title");
+  }
+
+  async frameTitle(frameId: number): Promise<string> {
+    return await this.runtimeCall<string>("title", { frameId });
+  }
+
+  async expect(frameId: number, params: ExpectOptions): Promise<unknown> {
+    type ExpectationResult = { matches?: boolean; missingReceived?: boolean; received?: unknown };
+    type FrameContext = {
+      _context(world: "main" | "utility"): Promise<{ injectedScript: () => Promise<unknown> }>;
+    };
+    type InjectedRuntimeHandle = {
+      evaluate: (pageFunction: unknown, args: unknown) => Promise<unknown>;
+    };
+    const timeout = typeof params.timeout === "number" ? params.timeout : 5_000;
+    const deadline = Date.now() + timeout;
+    const baseOptions = {
+      ...params,
+      expectedValue: await this.deserializeArgumentInFrame(params.expectedValue, frameId),
+    };
+    const lastIntermediateResult: {
+      isSet: boolean;
+      received?: unknown;
+      errorMessage?: string;
+    } = { isSet: false };
+
+    const runExpectation = async (): Promise<ExpectationResult> => {
+      const selector = typeof baseOptions.selector === "string" ? baseOptions.selector : undefined;
+      const frame = this.compatFrame(frameId);
+      const resolved = selector
+        ? await frame.selectors.resolveInjectedForSelector(selector, { strict: true })
+        : undefined;
+      const targetFrame: FrameContext = resolved?.frame ?? frame;
+      const world =
+        baseOptions.expression === "to.have.property"
+          ? "main"
+          : (resolved?.info?.world ?? "utility");
+      const context = await targetFrame._context(world);
+      const injected = (resolved?.injected ?? (await context.injectedScript())) as InjectedRuntimeHandle;
+      const scope = resolved?.scope;
+      const options = { ...baseOptions };
+      delete options.selector;
+
+      return (await injected.evaluate(
+        async (
+          injectedScript: unknown,
+          payload: { info?: unknown; options?: unknown; scope?: unknown }
+        ) => {
+          const script = injectedScript as {
+            querySelectorAll: (selector: unknown, root: unknown) => unknown[];
+            strictModeViolationError: (selector: unknown, elements: unknown[]) => never;
+            previewNode: (node: unknown) => string;
+            checkDeprecatedSelectorUsage: (selector: unknown, elements: unknown[]) => void;
+            expect: (
+              element: unknown,
+              options: Record<string, unknown>,
+              elements: unknown[]
+            ) => { matches?: boolean; missingReceived?: boolean; received?: unknown };
+          };
+          const parsed = payload.info as { parsed?: unknown } | undefined;
+          const options = (payload.options as Record<string, unknown>) ?? {};
+          const elements = payload.info
+            ? script.querySelectorAll(
+                parsed?.parsed,
+                payload.scope || document
+              )
+            : [];
+          const isArray =
+            options.expression === "to.have.count" || String(options.expression).endsWith(".array");
+          let log = "";
+          if (isArray) {
+            log = `  locator resolved to ${elements.length} element${elements.length === 1 ? "" : "s"}`;
+          } else if (elements.length > 1) {
+            throw script.strictModeViolationError(parsed?.parsed, elements);
+          } else if (elements.length) {
+            log = `  locator resolved to ${script.previewNode(elements[0])}`;
+          }
+          if (payload.info) {
+            script.checkDeprecatedSelectorUsage(parsed?.parsed, elements);
+          }
+          return {
+            log,
+            ...(await script.expect(elements[0], options, elements)),
+          };
+        },
+        { info: resolved?.info, options, scope }
+      )) as { matches?: boolean; missingReceived?: boolean; received?: unknown };
+    };
+
+    while (Date.now() < deadline) {
+      try {
+        const result = await runExpectation();
+        if (result.matches !== baseOptions.isNot) {
+          return result;
+        }
+        if (result.missingReceived) {
+          lastIntermediateResult.errorMessage = "Error: element(s) not found";
+        } else {
+          lastIntermediateResult.received = result.received;
+          lastIntermediateResult.errorMessage = undefined;
+        }
+        lastIntermediateResult.isSet = true;
+      } catch (error) {
+        if (error instanceof Error) {
+          lastIntermediateResult.errorMessage = error.message;
+        }
+        lastIntermediateResult.isSet = true;
+      }
+      await sleep(100);
+    }
+
+    return {
+      matches: !!baseOptions.isNot,
+      timedOut: true,
+      ...(lastIntermediateResult.received !== undefined
+        ? { received: lastIntermediateResult.received }
+        : {}),
+      ...(lastIntermediateResult.errorMessage
+        ? { errorMessage: lastIntermediateResult.errorMessage }
+        : {}),
+    };
   }
 
   async focus(
     selector: string | null,
     rootHandleId: number | null,
     handleId: number | null,
-    strict?: boolean
+    strict?: boolean,
+    frameId = 1
   ): Promise<void> {
-    await this.runtimeCall("focus", { selector, rootHandleId, handleId, strict: !!strict });
+    if (selector) {
+      await this.withTransientSelectorHandle(
+        frameId,
+        selector,
+        rootHandleId,
+        strict,
+        async (handle) => await this.focus(null, null, handle.id, false, frameId)
+      );
+      return;
+    }
+    await this.runtimeCall<void>("focus", {
+      frameId,
+      selector,
+      rootHandleId,
+      handleId,
+      strict: !!strict,
+    });
   }
 
   async blur(
     selector: string | null,
     rootHandleId: number | null,
     handleId: number | null,
-    strict?: boolean
+    strict?: boolean,
+    frameId = 1
   ): Promise<void> {
-    await this.runtimeCall("blur", { selector, rootHandleId, handleId, strict: !!strict });
+    if (selector) {
+      await this.withTransientSelectorHandle(
+        frameId,
+        selector,
+        rootHandleId,
+        strict,
+        async (handle) => await this.blur(null, null, handle.id, false, frameId)
+      );
+      return;
+    }
+    await this.runtimeCall<void>("blur", {
+      frameId,
+      selector,
+      rootHandleId,
+      handleId,
+      strict: !!strict,
+    });
   }
 
   async click(
     selector: string | null,
     rootHandleId: number | null,
     handleId: number | null,
-    strict?: boolean
+    strict?: boolean,
+    frameId = 1
   ): Promise<void> {
-    await this.runtimeCall("click", { selector, rootHandleId, handleId, strict: !!strict });
+    if (selector) {
+      await this.withTransientSelectorHandle(
+        frameId,
+        selector,
+        rootHandleId,
+        strict,
+        async (handle) => await this.click(null, null, handle.id, false, frameId)
+      );
+      return;
+    }
+    await this.runtimeCall<void>("click", {
+      frameId,
+      selector,
+      rootHandleId,
+      handleId,
+      strict: !!strict,
+    });
   }
 
   async dblclick(
     selector: string | null,
     rootHandleId: number | null,
     handleId: number | null,
-    strict?: boolean
+    strict?: boolean,
+    frameId = 1
   ): Promise<void> {
-    await this.runtimeCall("dblclick", { selector, rootHandleId, handleId, strict: !!strict });
+    if (selector) {
+      await this.withTransientSelectorHandle(
+        frameId,
+        selector,
+        rootHandleId,
+        strict,
+        async (handle) => await this.dblclick(null, null, handle.id, false, frameId)
+      );
+      return;
+    }
+    await this.runtimeCall<void>("dblclick", {
+      frameId,
+      selector,
+      rootHandleId,
+      handleId,
+      strict: !!strict,
+    });
   }
 
   async hover(
     selector: string | null,
     rootHandleId: number | null,
     handleId: number | null,
-    strict?: boolean
+    strict?: boolean,
+    frameId = 1
   ): Promise<void> {
-    await this.runtimeCall("hover", { selector, rootHandleId, handleId, strict: !!strict });
+    if (selector) {
+      await this.withTransientSelectorHandle(
+        frameId,
+        selector,
+        rootHandleId,
+        strict,
+        async (handle) => await this.hover(null, null, handle.id, false, frameId)
+      );
+      return;
+    }
+    await this.runtimeCall<void>("hover", {
+      frameId,
+      selector,
+      rootHandleId,
+      handleId,
+      strict: !!strict,
+    });
   }
 
   async tap(
     selector: string | null,
     rootHandleId: number | null,
     handleId: number | null,
-    strict?: boolean
+    strict?: boolean,
+    frameId = 1
   ): Promise<void> {
-    await this.runtimeCall("click", { selector, rootHandleId, handleId, strict: !!strict });
+    if (selector) {
+      await this.withTransientSelectorHandle(
+        frameId,
+        selector,
+        rootHandleId,
+        strict,
+        async (handle) => await this.tap(null, null, handle.id, false, frameId)
+      );
+      return;
+    }
+    await this.runtimeCall<void>("click", {
+      frameId,
+      selector,
+      rootHandleId,
+      handleId,
+      strict: !!strict,
+    });
   }
 
   async scrollIntoViewIfNeeded(handleId: number): Promise<void> {
-    await this.runtimeCall("scrollIntoViewIfNeeded", { handleId });
+    await this.runtimeCall<void>("scrollIntoViewIfNeeded", { handleId });
   }
 
   async dispatchEvent(
@@ -766,9 +1452,22 @@ export class ProxyAppController {
     handleId: number | null,
     type: string,
     eventInit: SerializedArgument,
-    strict?: boolean
+    strict?: boolean,
+    frameId = 1
   ): Promise<void> {
-    await this.runtimeCall("dispatchEvent", {
+    if (selector) {
+      await this.withTransientSelectorHandle(
+        frameId,
+        selector,
+        rootHandleId,
+        strict,
+        async (handle) =>
+          await this.dispatchEvent(null, null, handle.id, type, eventInit, false, frameId)
+      );
+      return;
+    }
+    await this.runtimeCall<void>("dispatchEvent", {
+      frameId,
       selector,
       rootHandleId,
       handleId,
@@ -784,9 +1483,32 @@ export class ProxyAppController {
     rootHandleId: number | null,
     handleId: number | null,
     value: string,
-    strict?: boolean
+    strict?: boolean,
+    frameId = 1
   ): Promise<void> {
-    await this.runtimeCall("fill", { selector, rootHandleId, handleId, value, strict: !!strict });
+    if (selector) {
+      await this.runSelectorAction<void>(
+        frameId,
+        "fill",
+        selector,
+        rootHandleId,
+        strict,
+        { value }
+      );
+      return;
+    }
+    if (handleId !== null) {
+      await this.runElementAction<void>(frameId, handleId, "fill", { value });
+      return;
+    }
+    await this.runtimeCall<void>("fill", {
+      frameId,
+      selector,
+      rootHandleId,
+      handleId,
+      value,
+      strict: !!strict,
+    });
   }
 
   async type(
@@ -794,9 +1516,32 @@ export class ProxyAppController {
     rootHandleId: number | null,
     handleId: number | null,
     text: string,
-    strict?: boolean
+    strict?: boolean,
+    frameId = 1
   ): Promise<void> {
-    await this.runtimeCall("type", { selector, rootHandleId, handleId, text, strict: !!strict });
+    if (selector) {
+      await this.runSelectorAction<void>(
+        frameId,
+        "type",
+        selector,
+        rootHandleId,
+        strict,
+        { text }
+      );
+      return;
+    }
+    if (handleId !== null) {
+      await this.runElementAction<string>(frameId, handleId, "type", { text });
+      return;
+    }
+    await this.runtimeCall<string>("type", {
+      frameId,
+      selector,
+      rootHandleId,
+      handleId,
+      text,
+      strict: !!strict,
+    });
   }
 
   async press(
@@ -804,9 +1549,32 @@ export class ProxyAppController {
     rootHandleId: number | null,
     handleId: number | null,
     key: string,
-    strict?: boolean
+    strict?: boolean,
+    frameId = 1
   ): Promise<void> {
-    await this.runtimeCall("press", { selector, rootHandleId, handleId, key, strict: !!strict });
+    if (selector) {
+      await this.runSelectorAction<void>(
+        frameId,
+        "press",
+        selector,
+        rootHandleId,
+        strict,
+        { key }
+      );
+      return;
+    }
+    if (handleId !== null) {
+      await this.runElementAction<string>(frameId, handleId, "press", { key });
+      return;
+    }
+    await this.runtimeCall<string>("press", {
+      frameId,
+      selector,
+      rootHandleId,
+      handleId,
+      key,
+      strict: !!strict,
+    });
   }
 
   async setChecked(
@@ -815,9 +1583,20 @@ export class ProxyAppController {
     handleId: number | null,
     checked: boolean,
     trial?: boolean,
-    strict?: boolean
+    strict?: boolean,
+    frameId = 1
   ): Promise<boolean> {
-    return await this.runtimeCall("check", {
+    if (selector) {
+      return await this.withTransientSelectorHandle(
+        frameId,
+        selector,
+        rootHandleId,
+        strict,
+        async (handle) => await this.setChecked(null, null, handle.id, checked, trial, false, frameId)
+      );
+    }
+    return await this.runtimeCall<boolean>("check", {
+      frameId,
       selector,
       rootHandleId,
       handleId,
@@ -833,9 +1612,39 @@ export class ProxyAppController {
     handleId: number | null,
     options: unknown[],
     elements: Array<{ handleId: number }>,
-    strict?: boolean
+    strict?: boolean,
+    frameId = 1
   ): Promise<string[]> {
-    return await this.runtimeCall("selectOption", {
+    if (selector) {
+      if (elements.length === 0) {
+        return await this.runSelectorAction<string[]>(
+          frameId,
+          "selectOption",
+          selector,
+          rootHandleId,
+          strict,
+          { options }
+        );
+      }
+      return await this.withTransientSelectorHandle(
+        frameId,
+        selector,
+        rootHandleId,
+        strict,
+        async (handle) =>
+          await this.selectOption(null, null, handle.id, options, elements, false, frameId)
+      );
+    }
+    if (handleId !== null) {
+      return await this.runElementAction<string[]>(frameId, handleId, "selectOption", {
+        options,
+        optionElements: elements.map((element) => ({
+          __pwRuntimeHandleId: element.handleId,
+        })),
+      });
+    }
+    return await this.runtimeCall<string[]>("selectOption", {
+      frameId,
       selector,
       rootHandleId,
       handleId,
@@ -850,9 +1659,20 @@ export class ProxyAppController {
     selector: string | null,
     rootHandleId: number | null,
     handleId: number | null,
-    strict?: boolean
+    strict?: boolean,
+    frameId = 1
   ): Promise<boolean> {
-    return await this.runtimeCall(method, {
+    if (selector) {
+      return await this.withTransientSelectorHandle(
+        frameId,
+        selector,
+        rootHandleId,
+        strict,
+        async (handle) => await this.boolState(method, null, null, handle.id, false, frameId)
+      );
+    }
+    return await this.runtimeCall<boolean>(method, {
+      frameId,
       selector,
       rootHandleId,
       handleId,
@@ -868,6 +1688,7 @@ export class ProxyAppController {
     await this.evalValue(
       `setTimeout(() => { location.href = ${JSON.stringify(url)}; }, 0); null`
     );
+    this.invalidateRuntime();
     await this.waitForAppReady();
   }
 }
