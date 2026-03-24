@@ -333,13 +333,11 @@ name = "dioxus-react"
 version = "0.1.0"
 dependencies = [
  "http",
- "js-sys",
  "serde",
  "serde_json",
  "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
- "wry-launch",
+ "wry-bridge",
+ "wry-driver",
 ]
 
 [[package]]
@@ -1116,7 +1114,8 @@ dependencies = [
 [[package]]
 name = "js-sys"
 version = "0.3.83"
-source = "git+https://github.com/ealmloff/wasm-bindgen-wry-1.git?branch=codex%2Ftyped-struct-export-fix#8038977761885fff3972d0ace264e522de820b0c"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "464a3709c7f55f1f721e5389aa6ea4e3bc6aba669353300af094b29ffbdde1d8"
 dependencies = [
  "once_cell",
  "wasm-bindgen",
@@ -2458,18 +2457,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "wasm-bindgen-futures"
-version = "0.4.56"
-source = "git+https://github.com/ealmloff/wasm-bindgen-wry-1.git?branch=codex%2Ftyped-struct-export-fix#8038977761885fff3972d0ace264e522de820b0c"
-dependencies = [
- "cfg-if",
- "js-sys",
- "once_cell",
- "wasm-bindgen",
- "web-sys",
-]
-
-[[package]]
 name = "wasm-bindgen-macro"
 version = "0.2.106"
 source = "git+https://github.com/ealmloff/wasm-bindgen-wry-1.git?branch=codex%2Ftyped-struct-export-fix#8038977761885fff3972d0ace264e522de820b0c"
@@ -2483,7 +2470,8 @@ dependencies = [
 [[package]]
 name = "web-sys"
 version = "0.3.83"
-source = "git+https://github.com/ealmloff/wasm-bindgen-wry-1.git?branch=codex%2Ftyped-struct-export-fix#8038977761885fff3972d0ace264e522de820b0c"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b32828d774c412041098d182a8b38b16ea816958e07cf40eec2bc080ae137ac"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
@@ -2907,6 +2895,28 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "wry-bridge"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "wry-driver"
+version = "0.1.0"
+dependencies = [
+ "http",
+ "js-sys",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
+ "web-sys",
+ "wry-launch",
 ]
 
 [[package]]

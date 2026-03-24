@@ -5,7 +5,7 @@ import path from "node:path";
 const watch = process.argv.includes("--watch");
 const DRIVER_RUNTIME_VIRTUAL_ID = "virtual:driver-runtime-bootstrap";
 const DRIVER_PLAYWRIGHT_INJECTED_SOURCE_VIRTUAL_ID = "virtual:driver-playwright-injected-source";
-const DRIVER_RUNTIME_ENTRY = "tests/driver/src/runtime/bootstrap.ts";
+const DRIVER_RUNTIME_ENTRY = "crates/playwright-driver/src/runtime/bootstrap.ts";
 const require = createRequire(import.meta.url);
 const PLAYWRIGHT_CORE_ROOT = path.dirname(require.resolve("playwright-core/package.json"));
 const PLAYWRIGHT_INJECTED_SOURCE_FILE = path.join(
@@ -151,7 +151,7 @@ const builds = [
     ],
   },
   {
-    entryPoints: ["tests/driver/src/index.ts"],
+    entryPoints: ["crates/playwright-driver/src/index.ts"],
     bundle: true,
     outfile: "tests/driver/dist/index.mjs",
     format: "esm",

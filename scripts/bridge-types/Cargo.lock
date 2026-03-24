@@ -20,6 +20,7 @@ version = "0.1.0"
 dependencies = [
  "serde_json",
  "wasm-bindgen",
+ "wry-bridge",
 ]
 
 [[package]]
@@ -71,6 +72,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9a8e94ea7f378bd32cbbd37198a4a91436180c5bb472411e48b5ec2e2124ae9e"
 dependencies = [
  "serde_core",
+ "serde_derive",
 ]
 
 [[package]]
@@ -169,7 +171,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "wry-bridge"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "zmij"
 version = "1.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
+
+[[patch.unused]]
+name = "wasm-bindgen"
+version = "0.2.106"
+source = "git+https://github.com/ealmloff/wasm-bindgen-wry-1.git?branch=codex%2Ftyped-struct-export-fix#8038977761885fff3972d0ace264e522de820b0c"
+
+[[patch.unused]]
+name = "wasm-bindgen-macro"
+version = "0.2.106"
+source = "git+https://github.com/ealmloff/wasm-bindgen-wry-1.git?branch=codex%2Ftyped-struct-export-fix#8038977761885fff3972d0ace264e522de820b0c"

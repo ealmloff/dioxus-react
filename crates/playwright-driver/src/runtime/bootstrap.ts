@@ -889,12 +889,22 @@ export default function installPlaywrightRuntime(version: number): true {
       descriptor?.set?.call(target, value);
       return;
     }
+    if (target instanceof HTMLSelectElement) {
+      const descriptor = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value");
+      descriptor?.set?.call(target, value);
+      return;
+    }
     const targetObject = asObject(target);
     if (targetObject.isContentEditable) {
       targetObject.textContent = value;
       return;
     }
     throw new Error("Target does not support textual value");
+  };
+
+  const setNativeOptionSelected = (option: HTMLOptionElement, selected: boolean): void => {
+    const descriptor = Object.getOwnPropertyDescriptor(HTMLOptionElement.prototype, "selected");
+    descriptor?.set?.call(option, selected);
   };
 
   const scrollIntoViewIfNeeded = (target: unknown): void => {
@@ -1026,6 +1036,7 @@ export default function installPlaywrightRuntime(version: number): true {
     if (!(target instanceof HTMLSelectElement)) {
       throw new Error("Target is not a select element");
     }
+    focusTarget(target);
 
     let selectedOptions: HTMLOptionElement[] = [];
     const optionElements = asUnknownArray(payload.optionElements).filter(
@@ -1049,7 +1060,7 @@ export default function installPlaywrightRuntime(version: number): true {
     }
 
     for (const option of Array.from(target.options)) {
-      option.selected = selectedOptions.includes(option);
+      setNativeOptionSelected(option, selectedOptions.includes(option));
     }
 
     dispatchSyntheticEvent(target, "input", {});

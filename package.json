@@ -5,11 +5,11 @@
   "main": "index.js",
   "scripts": {
     "gen:bridge-types": "node scripts/generate-native-bridge-types.mjs",
-    "build": "tsc -p tests/driver/tsconfig.json --noEmit && node esbuild.mjs",
+    "build": "tsc -p crates/playwright-driver/tsconfig.json --noEmit && node esbuild.mjs",
     "prebuild": "npm run gen:bridge-types",
     "build:watch": "node esbuild.mjs --watch",
     "build:all": "npm run build && cargo build",
-    "lint": "eslint assets/src tests/driver/src",
+    "lint": "eslint assets/src crates/playwright-driver/src",
     "lint:fix": "npm run lint -- --fix",
     "test": "npm run build:all && playwright test",
     "test:debug": "npm run build:all && DEBUG=1 playwright test --reporter=list"

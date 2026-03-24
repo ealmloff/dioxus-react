@@ -116,6 +116,10 @@ function normalizeStringArrayPayload(value: unknown): string[] {
     return value.map((entry) => String(entry));
   }
   if (value && typeof value === "object") {
+    const deserialized = deserializeBridgeValue(value);
+    if (Array.isArray(deserialized)) {
+      return deserialized.map((entry) => String(entry));
+    }
     const record = value as Record<string, unknown>;
     const numericKeys = Object.keys(record)
       .filter((key) => /^\d+$/.test(key))
@@ -124,6 +128,8 @@ function normalizeStringArrayPayload(value: unknown): string[] {
     if (numericKeys.length > 0) {
       return numericKeys.map((key) => String(record[String(key)] ?? ""));
     }
+    const objectKeys = Object.keys(record).join(",");
+    throw new Error(`Expected string array payload, got object with keys: ${objectKeys || "(none)"}`);
   }
   throw new Error(`Expected string array payload, got ${typeof value}`);
 }
