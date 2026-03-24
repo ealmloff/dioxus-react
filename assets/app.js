@@ -194,6 +194,7 @@
     const [doubleClicks, setDoubleClicks] = (0, import_react.useState)(0);
     const [keyLog, setKeyLog] = (0, import_react.useState)([]);
     const [submitted, setSubmitted] = (0, import_react.useState)(0);
+    const [blurState, setBlurState] = (0, import_react.useState)("blurred");
     const [asyncVisible, setAsyncVisible] = (0, import_react.useState)(false);
     const [customMessage, setCustomMessage] = (0, import_react.useState)("idle");
     const [editableText, setEditableText] = (0, import_react.useState)("Editable content");
@@ -304,7 +305,18 @@
         hidden: !asyncVisible
       },
       "Ready for waitForSelector"
-    ), /* @__PURE__ */ import_react.default.createElement("p", { id: "lab-editable-output", className: "lab-output" }, editableText)), /* @__PURE__ */ import_react.default.createElement("section", { className: "lab-panel", id: "lab-events-panel" }, /* @__PURE__ */ import_react.default.createElement("h3", null, "Events"), /* @__PURE__ */ import_react.default.createElement(
+    ), /* @__PURE__ */ import_react.default.createElement("p", { id: "lab-editable-output", className: "lab-output" }, editableText)), /* @__PURE__ */ import_react.default.createElement("section", { className: "lab-panel", id: "lab-content-panel" }, /* @__PURE__ */ import_react.default.createElement("h3", null, "Content and Focus"), /* @__PURE__ */ import_react.default.createElement("div", { id: "lab-rich-content", className: "lab-rich-content" }, /* @__PURE__ */ import_react.default.createElement("span", null, "Hello"), " ", /* @__PURE__ */ import_react.default.createElement("strong", null, "World"), " ", /* @__PURE__ */ import_react.default.createElement("span", { hidden: true }, "Invisible")), /* @__PURE__ */ import_react.default.createElement("div", { className: "row" }, /* @__PURE__ */ import_react.default.createElement("label", { className: "lab-label", htmlFor: "lab-blur-input" }, "Blur Target"), /* @__PURE__ */ import_react.default.createElement(
+      "input",
+      {
+        id: "lab-blur-input",
+        className: "lab-input",
+        value: "focus me",
+        onChange: () => {
+        },
+        onFocus: () => setBlurState("focused"),
+        onBlur: () => setBlurState("blurred")
+      }
+    )), /* @__PURE__ */ import_react.default.createElement("p", { id: "lab-blur-output", className: "lab-output" }, blurState)), /* @__PURE__ */ import_react.default.createElement("section", { className: "lab-panel", id: "lab-events-panel" }, /* @__PURE__ */ import_react.default.createElement("h3", null, "Events"), /* @__PURE__ */ import_react.default.createElement(
       "div",
       {
         id: "lab-hover-target",
@@ -332,11 +344,61 @@
       "Dispatch target"
     ), /* @__PURE__ */ import_react.default.createElement("div", { className: "lab-output-list" }, /* @__PURE__ */ import_react.default.createElement("p", { id: "lab-hover-output", className: "lab-output" }, hovered ? "hovered" : "idle"), /* @__PURE__ */ import_react.default.createElement("p", { id: "lab-double-count", className: "lab-output" }, String(doubleClicks)), /* @__PURE__ */ import_react.default.createElement("p", { id: "lab-dispatch-output", className: "lab-output" }, customMessage))), /* @__PURE__ */ import_react.default.createElement("section", { className: "lab-panel", id: "lab-handle-panel" }, /* @__PURE__ */ import_react.default.createElement("h3", null, "Handle Scope"), /* @__PURE__ */ import_react.default.createElement("div", { id: "lab-scope", "data-scope": "root" }, /* @__PURE__ */ import_react.default.createElement("p", { id: "lab-scope-label", "data-role": "scope-label" }, "Scoped query root"), /* @__PURE__ */ import_react.default.createElement("ul", { id: "lab-list", className: "lab-list" }, /* @__PURE__ */ import_react.default.createElement("li", { className: "lab-list-item", "data-item": "one" }, "One"), /* @__PURE__ */ import_react.default.createElement("li", { className: "lab-list-item", "data-item": "two" }, "Two"), /* @__PURE__ */ import_react.default.createElement("li", { className: "lab-list-item", "data-item": "three" }, "Three"))))));
   }
+  function LocatorLab() {
+    const [saved, setSaved] = (0, import_react.useState)(false);
+    return /* @__PURE__ */ import_react.default.createElement("div", { className: "card automation-card", id: "locator-lab" }, /* @__PURE__ */ import_react.default.createElement("h2", null, "Locator Lab"), /* @__PURE__ */ import_react.default.createElement("p", { className: "subtitle" }, "Deterministic fixtures for semantic locator coverage."), /* @__PURE__ */ import_react.default.createElement("div", { className: "lab-grid locator-grid" }, /* @__PURE__ */ import_react.default.createElement("section", { className: "lab-panel", id: "locator-label-panel" }, /* @__PURE__ */ import_react.default.createElement("h3", null, "Labels and Placeholders"), /* @__PURE__ */ import_react.default.createElement("div", { className: "row" }, /* @__PURE__ */ import_react.default.createElement("label", { className: "lab-label", id: "locator-name-label", htmlFor: "locator-name" }, "Full name"), /* @__PURE__ */ import_react.default.createElement(
+      "input",
+      {
+        id: "locator-name",
+        className: "lab-input",
+        placeholder: "Ada Lovelace",
+        defaultValue: "Ada Lovelace",
+        readOnly: true
+      }
+    )), /* @__PURE__ */ import_react.default.createElement("div", { className: "row" }, /* @__PURE__ */ import_react.default.createElement("label", { className: "lab-label", id: "locator-search-label", htmlFor: "locator-search" }, "Search sample"), /* @__PURE__ */ import_react.default.createElement(
+      "input",
+      {
+        id: "locator-search",
+        className: "lab-input",
+        placeholder: "Search the catalog",
+        "aria-label": "Search sample",
+        defaultValue: "",
+        readOnly: true
+      }
+    ))), /* @__PURE__ */ import_react.default.createElement("section", { className: "lab-panel", id: "locator-text-panel" }, /* @__PURE__ */ import_react.default.createElement("h3", null, "Text and Title"), /* @__PURE__ */ import_react.default.createElement("p", { id: "locator-text-target", className: "lab-output" }, "Locator text target"), /* @__PURE__ */ import_react.default.createElement(
+      "button",
+      {
+        id: "locator-save",
+        className: "btn btn-sm",
+        title: "Save locator sample",
+        onClick: () => setSaved(true)
+      },
+      "Save sample"
+    ), /* @__PURE__ */ import_react.default.createElement("p", { id: "locator-save-output", className: "lab-output" }, saved ? "saved" : "idle"), /* @__PURE__ */ import_react.default.createElement(
+      "button",
+      {
+        id: "locator-icon",
+        className: "btn btn-sm",
+        title: "icon button",
+        "aria-label": "icon button"
+      },
+      "Icon"
+    )), /* @__PURE__ */ import_react.default.createElement("section", { className: "lab-panel", id: "locator-role-panel" }, /* @__PURE__ */ import_react.default.createElement("h3", null, "Roles"), /* @__PURE__ */ import_react.default.createElement(
+      "button",
+      {
+        id: "locator-role-button",
+        className: "btn",
+        "aria-label": "role button sample"
+      },
+      "Role Button"
+    ), /* @__PURE__ */ import_react.default.createElement("div", { id: "locator-status", role: "status", "aria-label": "save status" }, saved ? "Saved status" : "Idle status"), /* @__PURE__ */ import_react.default.createElement("a", { id: "locator-link", href: "#locator-lab", title: "jump to locator lab" }, "Locator link"))));
+  }
   var TAB_NAMES = [
     "System Info",
     "Fibonacci",
     "File Explorer",
     "Counter",
+    "Locator Lab",
     "Automation Lab"
   ];
   function App() {
@@ -357,6 +419,9 @@
         break;
       case "Counter":
         content = /* @__PURE__ */ import_react.default.createElement(Counter, null);
+        break;
+      case "Locator Lab":
+        content = /* @__PURE__ */ import_react.default.createElement(LocatorLab, null);
         break;
       case "Automation Lab":
         content = /* @__PURE__ */ import_react.default.createElement(AutomationLab, null);

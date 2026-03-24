@@ -330,6 +330,7 @@ function AutomationLab() {
   const [doubleClicks, setDoubleClicks] = useState(0);
   const [keyLog, setKeyLog] = useState<string[]>([]);
   const [submitted, setSubmitted] = useState(0);
+  const [blurState, setBlurState] = useState("blurred");
   const [asyncVisible, setAsyncVisible] = useState(false);
   const [customMessage, setCustomMessage] = useState("idle");
   const [editableText, setEditableText] = useState("Editable content");
@@ -503,6 +504,30 @@ function AutomationLab() {
           </p>
         </section>
 
+        <section className="lab-panel" id="lab-content-panel">
+          <h3>Content and Focus</h3>
+          <div id="lab-rich-content" className="lab-rich-content">
+            <span>Hello</span> <strong>World</strong>{" "}
+            <span hidden>Invisible</span>
+          </div>
+          <div className="row">
+            <label className="lab-label" htmlFor="lab-blur-input">
+              Blur Target
+            </label>
+            <input
+              id="lab-blur-input"
+              className="lab-input"
+              value="focus me"
+              onChange={() => {}}
+              onFocus={() => setBlurState("focused")}
+              onBlur={() => setBlurState("blurred")}
+            />
+          </div>
+          <p id="lab-blur-output" className="lab-output">
+            {blurState}
+          </p>
+        </section>
+
         <section className="lab-panel" id="lab-events-panel">
           <h3>Events</h3>
           <div
@@ -569,6 +594,97 @@ function AutomationLab() {
 }
 
 // ---------------------------------------------------------------------------
+// Locator Lab — semantic fixtures for label/text/title/placeholder/role testing
+// ---------------------------------------------------------------------------
+
+function LocatorLab() {
+  const [saved, setSaved] = useState(false);
+
+  return (
+    <div className="card automation-card" id="locator-lab">
+      <h2>Locator Lab</h2>
+      <p className="subtitle">
+        Deterministic fixtures for semantic locator coverage.
+      </p>
+
+      <div className="lab-grid locator-grid">
+        <section className="lab-panel" id="locator-label-panel">
+          <h3>Labels and Placeholders</h3>
+          <div className="row">
+            <label className="lab-label" id="locator-name-label" htmlFor="locator-name">
+              Full name
+            </label>
+            <input
+              id="locator-name"
+              className="lab-input"
+              placeholder="Ada Lovelace"
+              defaultValue="Ada Lovelace"
+              readOnly
+            />
+          </div>
+          <div className="row">
+            <label className="lab-label" id="locator-search-label" htmlFor="locator-search">
+              Search sample
+            </label>
+            <input
+              id="locator-search"
+              className="lab-input"
+              placeholder="Search the catalog"
+              aria-label="Search sample"
+              defaultValue=""
+              readOnly
+            />
+          </div>
+        </section>
+
+        <section className="lab-panel" id="locator-text-panel">
+          <h3>Text and Title</h3>
+          <p id="locator-text-target" className="lab-output">
+            Locator text target
+          </p>
+          <button
+            id="locator-save"
+            className="btn btn-sm"
+            title="Save locator sample"
+            onClick={() => setSaved(true)}
+          >
+            Save sample
+          </button>
+          <p id="locator-save-output" className="lab-output">
+            {saved ? "saved" : "idle"}
+          </p>
+          <button
+            id="locator-icon"
+            className="btn btn-sm"
+            title="icon button"
+            aria-label="icon button"
+          >
+            Icon
+          </button>
+        </section>
+
+        <section className="lab-panel" id="locator-role-panel">
+          <h3>Roles</h3>
+          <button
+            id="locator-role-button"
+            className="btn"
+            aria-label="role button sample"
+          >
+            Role Button
+          </button>
+          <div id="locator-status" role="status" aria-label="save status">
+            {saved ? "Saved status" : "Idle status"}
+          </div>
+          <a id="locator-link" href="#locator-lab" title="jump to locator lab">
+            Locator link
+          </a>
+        </section>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // App shell
 // ---------------------------------------------------------------------------
 
@@ -577,6 +693,7 @@ const TAB_NAMES = [
   "Fibonacci",
   "File Explorer",
   "Counter",
+  "Locator Lab",
   "Automation Lab",
 ];
 
@@ -600,6 +717,9 @@ function App() {
       break;
     case "Counter":
       content = <Counter />;
+      break;
+    case "Locator Lab":
+      content = <LocatorLab />;
       break;
     case "Automation Lab":
       content = <AutomationLab />;

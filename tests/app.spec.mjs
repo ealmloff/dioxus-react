@@ -1,7 +1,6 @@
 import { test, expect, webkit } from "@playwright/test";
 import { PlaywrightWryProxy } from "./driver/dist/index.mjs";
 
-test.describe.configure({ mode: "serial" });
 
 /** @type {import("./driver/dist/index.mjs").PlaywrightWryProxy | null} */
 let proxy = null;
@@ -58,7 +57,7 @@ test.afterEach(async () => {
 test("connects to the real embedded WRY page", async () => {
   expect(currentPage().url()).toContain("wry://");
   await expect.poll(() => currentPage().title()).toBe("dioxus-react");
-  await expect.poll(() => currentPage().evaluate(() => document.querySelectorAll(".tab").length)).toBe(5);
+  await expect.poll(() => currentPage().evaluate(() => document.querySelectorAll(".tab").length)).toBe(6);
   await expect.poll(() => currentPage().textContent("h1")).toBe("dioxus-react");
   await expect.poll(() => currentPage().content()).toContain("wasm-bindgen-wry");
 });
@@ -100,8 +99,10 @@ test("supports frame-level form and state methods", async () => {
   await expect.poll(() => currentPage().textContent("h2")).toBe("Automation Lab");
 
   expect(await currentPage().isEditable("#lab-text")).toBe(true);
+  expect(await currentPage().isEnabled("#lab-text")).toBe(true);
   expect(await currentPage().isEditable("#lab-readonly")).toBe(false);
   expect(await currentPage().isDisabled("#lab-disabled")).toBe(true);
+  expect(await currentPage().isEnabled("#lab-disabled")).toBe(false);
   expect(await currentPage().isHidden("#lab-async-note")).toBe(true);
 
   await currentPage().focus("#lab-text");
@@ -129,6 +130,54 @@ test("supports frame-level form and state methods", async () => {
   ]);
   expect(multiValues).toEqual(["alpha", "gamma"]);
   await expect.poll(() => currentPage().textContent("#lab-multi-select-output")).toBe("alpha,gamma");
+});
+
+test("supports content, focus, query counts, and wait timeouts", async () => {
+  await clickTab("Automation Lab");
+  await expect.poll(() => currentPage().textContent("h2")).toBe("Automation Lab");
+
+  expect((await currentPage().innerText("#lab-rich-content")).trim()).toBe("Hello World");
+  const richHtml = await currentPage().innerHTML("#lab-rich-content");
+  expect(richHtml).toContain("<span>Hello</span>");
+  expect(richHtml).toContain("<strong>World</strong>");
+  expect(richHtml).toContain("hidden");
+
+  const blurInput = currentPage().locator("#lab-blur-input");
+  await blurInput.focus();
+  await expect.poll(() => currentPage().textContent("#lab-blur-output")).toBe("focused");
+  await blurInput.blur();
+  await expect.poll(() => currentPage().textContent("#lab-blur-output")).toBe("blurred");
+
+  await expect.poll(() => currentPage().locator(".lab-list-item").count()).toBe(3);
+
+  const start = performance.now();
+  await currentPage().waitForTimeout(80);
+  expect(performance.now() - start).toBeGreaterThanOrEqual(60);
+});
+
+test("exposes stable locator fixtures for labels, titles, placeholders, text, and roles", async () => {
+  await clickTab("Locator Lab");
+  await expect.poll(() => currentPage().textContent("h2")).toBe("Locator Lab");
+
+  expect(await currentPage().textContent("#locator-name-label")).toBe("Full name");
+  expect(await currentPage().textContent("#locator-search-label")).toBe("Search sample");
+  expect(await currentPage().getAttribute("#locator-name", "placeholder")).toBe("Ada Lovelace");
+  expect(await currentPage().getAttribute("#locator-search", "placeholder")).toBe(
+    "Search the catalog"
+  );
+  expect(await currentPage().getAttribute("#locator-search", "aria-label")).toBe(
+    "Search sample"
+  );
+  expect(await currentPage().getAttribute("#locator-save", "title")).toBe("Save locator sample");
+  expect(await currentPage().textContent("#locator-text-target")).toBe("Locator text target");
+  expect(await currentPage().textContent("#locator-save-output")).toBe("idle");
+  expect(await currentPage().textContent("#locator-status")).toBe("Idle status");
+  expect(await currentPage().getAttribute("#locator-status", "role")).toBe("status");
+  expect(await currentPage().getAttribute("#locator-link", "title")).toBe("jump to locator lab");
+
+  await currentPage().click("#locator-save");
+  await expect.poll(() => currentPage().textContent("#locator-save-output")).toBe("saved");
+  await expect.poll(() => currentPage().textContent("#locator-status")).toBe("Saved status");
 });
 
 test("supports waiters and event dispatch", async () => {

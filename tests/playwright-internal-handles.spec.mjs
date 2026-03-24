@@ -1,7 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { installInternalSessionHooks } from "./playwright-internal-utils.mjs";
 
-test.describe.configure({ mode: "serial" });
 
 const { currentPage } = installInternalSessionHooks(test);
 

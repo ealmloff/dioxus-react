@@ -4,7 +4,7 @@
   "description": "Use **React** for your UI while accessing **native Rust** capabilities — powered by [wasm-bindgen-wry](https://github.com/DioxusLabs/wasm-bindgen-wry).",
   "main": "index.js",
   "scripts": {
-    "build": "node esbuild.mjs",
+    "build": "tsc -p tests/driver/tsconfig.json --noEmit && node esbuild.mjs",
     "build:watch": "node esbuild.mjs --watch",
     "build:all": "npm run build && cargo build",
     "test": "npm run build:all && playwright test",

@@ -79,3 +79,8 @@ interface ImportMeta {
   url: string;
   dirname: string;
 }
+
+declare module "virtual:driver-runtime-bootstrap" {
+  const source: string;
+  export default source;
+}

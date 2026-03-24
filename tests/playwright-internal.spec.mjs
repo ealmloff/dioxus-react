@@ -3,7 +3,6 @@ import { PlaywrightWryProxy } from "./driver/dist/index.mjs";
 
 const BLANK_DOCUMENT = "<!DOCTYPE html><html><head></head><body></body></html>";
 
-test.describe.configure({ mode: "serial" });
 
 /** @type {import("./driver/dist/index.mjs").PlaywrightWryProxy | null} */
 let proxy = null;

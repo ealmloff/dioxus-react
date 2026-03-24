@@ -1,6 +1,52 @@
 import * as esbuild from "esbuild";
 
 const watch = process.argv.includes("--watch");
+const DRIVER_RUNTIME_VIRTUAL_ID = "virtual:driver-runtime-bootstrap";
+const DRIVER_RUNTIME_ENTRY = "tests/driver/src/runtime/bootstrap.ts";
+
+function driverRuntimeBootstrapPlugin() {
+  let compiledSourcePromise = null;
+
+  return {
+    name: "driver-runtime-bootstrap",
+    setup(build) {
+      build.onStart(() => {
+        compiledSourcePromise = null;
+      });
+
+      build.onResolve({ filter: /^virtual:driver-runtime-bootstrap$/ }, () => ({
+        path: DRIVER_RUNTIME_VIRTUAL_ID,
+        namespace: "driver-runtime-bootstrap",
+      }));
+
+      build.onLoad(
+        { filter: /^virtual:driver-runtime-bootstrap$/, namespace: "driver-runtime-bootstrap" },
+        async () => {
+          compiledSourcePromise ??= esbuild
+            .build({
+              entryPoints: [DRIVER_RUNTIME_ENTRY],
+              bundle: true,
+              format: "iife",
+              globalName: "__pwRuntimeBootstrap",
+              platform: "browser",
+              target: "es2022",
+              write: false,
+              sourcemap: false,
+              legalComments: "none",
+            })
+            .then((result) => result.outputFiles[0].text);
+
+          const compiledSource = await compiledSourcePromise;
+          return {
+            contents: `export default ${JSON.stringify(compiledSource)};`,
+            loader: "js",
+            watchFiles: [DRIVER_RUNTIME_ENTRY],
+          };
+        }
+      );
+    },
+  };
+}
 
 const builds = [
   {
@@ -66,6 +112,7 @@ const builds = [
     platform: "node",
     target: "node20",
     sourcemap: true,
+    plugins: [driverRuntimeBootstrapPlugin()],
   },
 ];
 

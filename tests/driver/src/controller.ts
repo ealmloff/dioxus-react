@@ -213,9 +213,13 @@ export class ProxyAppController {
       throw await this.decorateRuntimeError(error);
     }
     const value = deserializeBridgeValue(JSON.parse(String(raw)));
-    if (value && typeof value === "object" && value.__error) {
-      const error = new Error(value.__error);
-      error.stack = value.__stack || error.stack;
+    const bridgeError =
+      value && typeof value === "object"
+        ? (value as { __error?: string; __stack?: string })
+        : null;
+    if (bridgeError?.__error) {
+      const error = new Error(bridgeError.__error);
+      error.stack = bridgeError.__stack || error.stack;
       throw await this.decorateRuntimeError(error);
     }
 

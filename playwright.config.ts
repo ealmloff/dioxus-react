@@ -5,6 +5,6 @@ export default defineConfig({
   testMatch: ["app.spec.mjs", "playwright-internal-*.spec.mjs"],
   timeout: 30_000,
   retries: 0,
-  fullyParallel: false,
-  workers: 1,
+  fullyParallel: true,
+  workers: 32,
 });
