@@ -1,3 +1,0 @@
-{
-  "extends": "../crates/playwright-driver/tsconfig.json"
-}
