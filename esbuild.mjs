@@ -1,49 +1,8 @@
 import * as esbuild from "esbuild";
-import { createRequire } from "node:module";
-import path from "node:path";
 
 const watch = process.argv.includes("--watch");
 const DRIVER_RUNTIME_VIRTUAL_ID = "virtual:driver-runtime-bootstrap";
-const DRIVER_PLAYWRIGHT_INJECTED_SOURCE_VIRTUAL_ID = "virtual:driver-playwright-injected-source";
 const DRIVER_RUNTIME_ENTRY = "crates/playwright-driver/src/runtime/bootstrap.ts";
-const require = createRequire(import.meta.url);
-const PLAYWRIGHT_CORE_ROOT = path.dirname(require.resolve("playwright-core/package.json"));
-const PLAYWRIGHT_INJECTED_SOURCE_FILE = path.join(
-  PLAYWRIGHT_CORE_ROOT,
-  "lib",
-  "generated",
-  "injectedScriptSource.js"
-);
-
-function driverPlaywrightInjectedSourcePlugin() {
-  return {
-    name: "driver-playwright-injected-source",
-    setup(build) {
-      build.onResolve(
-        { filter: /^virtual:driver-playwright-injected-source$/ },
-        () => ({
-          path: DRIVER_PLAYWRIGHT_INJECTED_SOURCE_VIRTUAL_ID,
-          namespace: "driver-playwright-injected-source",
-        })
-      );
-
-      build.onLoad(
-        {
-          filter: /^virtual:driver-playwright-injected-source$/,
-          namespace: "driver-playwright-injected-source",
-        },
-        () => {
-          const { source } = require(PLAYWRIGHT_INJECTED_SOURCE_FILE);
-          return {
-            contents: `export default ${JSON.stringify(source)};`,
-            loader: "js",
-            watchFiles: [PLAYWRIGHT_INJECTED_SOURCE_FILE],
-          };
-        }
-      );
-    },
-  };
-}
 
 function driverRuntimeBootstrapPlugin() {
   let compiledSourcePromise = null;
@@ -75,11 +34,10 @@ function driverRuntimeBootstrapPlugin() {
               sourcemap: false,
               legalComments: "none",
               metafile: true,
-              plugins: [driverPlaywrightInjectedSourcePlugin()],
             })
             .then((result) => ({
               compiledSource: result.outputFiles[0].text,
-              watchFiles: [...Object.keys(result.metafile.inputs), PLAYWRIGHT_INJECTED_SOURCE_FILE],
+              watchFiles: Object.keys(result.metafile.inputs),
             }));
 
           const { compiledSource, watchFiles } = await compiledSourcePromise;

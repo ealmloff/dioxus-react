@@ -87,6 +87,66 @@ export const { TargetClosedError, TimeoutError } = requirePlaywrightInternal<{
   TimeoutError: ErrorCtor;
 }>("lib/server/errors.js");
 
+export interface JSHandleLike {
+  _objectId?: string;
+  _context: unknown;
+  _setPreview(preview: string): void;
+  dispose(): void;
+}
+
+export type JSHandleCtor = new (
+  context: unknown,
+  type: string,
+  preview: string,
+  objectId: string | undefined,
+  value: unknown,
+) => JSHandleLike;
+
+export type ElementHandleCtor = new (context: unknown, objectId: string) => JSHandleLike;
+
+export const {
+  JSHandle,
+  JavaScriptErrorInEvaluate,
+  parseUnserializableValue,
+  sparseArrayToString,
+} = requirePlaywrightInternal<{
+  JSHandle: JSHandleCtor;
+  JavaScriptErrorInEvaluate: new (message?: string) => Error;
+  parseUnserializableValue: (value: string) => number;
+  sparseArrayToString: (entries: Array<{ name: string; value: string }>) => string;
+}>("lib/server/javascript.js");
+
+export const { ElementHandle, FrameExecutionContext } = requirePlaywrightInternal<{
+  ElementHandle: ElementHandleCtor;
+  FrameExecutionContext: new (...args: unknown[]) => unknown;
+}>("lib/server/dom.js");
+
+export const { parseEvaluationResultValue } = requirePlaywrightInternal<{
+  parseEvaluationResultValue: (value: unknown) => unknown;
+}>("lib/utils/isomorphic/utilityScriptSerializers.js");
+
+type AnyCtor = new (...args: unknown[]) => unknown;
+
+export const { Browser } = requirePlaywrightInternal<{ Browser: AnyCtor }>("lib/server/browser.js");
+export const { BrowserContext } = requirePlaywrightInternal<{ BrowserContext: AnyCtor }>(
+  "lib/server/browserContext.js",
+);
+export const { Page } = requirePlaywrightInternal<{ Page: AnyCtor }>("lib/server/page.js");
+export const { createRootSdkObject } = requirePlaywrightInternal<{
+  createRootSdkObject: () => SdkObjectLike;
+}>("lib/server/instrumentation.js");
+
+export const { PlaywrightDispatcher } = requirePlaywrightInternal<{
+  PlaywrightDispatcher: AnyCtor;
+}>("lib/server/dispatchers/playwrightDispatcher.js");
+export const { BrowserDispatcher } = requirePlaywrightInternal<{
+  BrowserDispatcher: AnyCtor;
+}>("lib/server/dispatchers/browserDispatcher.js");
+
+export const { Playwright } = requirePlaywrightInternal<{ Playwright: AnyCtor }>(
+  "lib/server/playwright.js",
+);
+
 export function serializeResult(value: unknown): unknown {
   return serializeValue(value, (fallThrough: unknown) => ({ fallThrough }));
 }

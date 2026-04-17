@@ -97,6 +97,49 @@ test.afterEach(async () => {
   await closeSession();
 });
 
+test("exposes __pwx execution-context runtime in the webview", async () => {
+  await seedDispatchPage();
+
+  // rawEvaluateJSON: primitive.
+  const jsonRemote = await currentPage().evaluate(async () => {
+    return await window.__pwx.rawEvaluateJSON("1 + 2");
+  });
+  expect(jsonRemote).toEqual({ type: "number", value: 3 });
+
+  // rawEvaluateJSON: NaN / Infinity round-trip via unserializableValue.
+  const nanRemote = await currentPage().evaluate(async () => {
+    return await window.__pwx.rawEvaluateJSON("NaN");
+  });
+  expect(nanRemote).toMatchObject({ type: "number", unserializableValue: "NaN" });
+
+  // rawEvaluateHandle: object gets an objectId; callFunctionOn reads it back.
+  const callRoundTrip = await currentPage().evaluate(async () => {
+    const handle = await window.__pwx.rawEvaluateHandle("({ a: 40, b: 2 })");
+    const sum = await window.__pwx.callFunctionOn({
+      functionDeclaration: "(function(o){return o.a + o.b;})",
+      objectId: handle.objectId,
+      arguments: [{ objectId: handle.objectId }],
+      returnByValue: true,
+      awaitPromise: true,
+    });
+    const props = window.__pwx.getProperties(handle.objectId);
+    window.__pwx.releaseHandle(handle.objectId);
+    return { sum, props: props.map((p) => ({ name: p.name, value: p.handle.value })) };
+  });
+  expect(callRoundTrip.sum).toEqual({ type: "number", value: 42 });
+  expect(callRoundTrip.props).toEqual([
+    { name: "a", value: 40 },
+    { name: "b", value: 2 },
+  ]);
+
+  // rawEvaluateHandle: DOM node gets subtype:node.
+  const nodeRemote = await currentPage().evaluate(async () => {
+    const remote = await window.__pwx.rawEvaluateHandle("document.body");
+    return { type: remote.type, subtype: remote.subtype, hasObjectId: typeof remote.objectId === "string" };
+  });
+  expect(nodeRemote).toEqual({ type: "object", subtype: "node", hasObjectId: true });
+});
+
 test("dispatches page.setContent/title/content/evaluation commands", async () => {
   await seedDispatchPage();
 

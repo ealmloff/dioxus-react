@@ -84,8 +84,3 @@ declare module "virtual:driver-runtime-bootstrap" {
   const source: string;
   export default source;
 }
-
-declare module "virtual:driver-playwright-injected-source" {
-  const source: string;
-  export default source;
-}

@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(sed 's/\\(.*$//')",
+      "Bash(npm run *)",
+      "Bash(npx playwright *)"
+    ]
+  }
+}

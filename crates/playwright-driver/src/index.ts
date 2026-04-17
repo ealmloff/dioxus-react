@@ -1,1 +1,1 @@
-export { PlaywrightWryProxy } from "./proxy";
+export { PlaywrightWryProxy } from "./backend/connection";
