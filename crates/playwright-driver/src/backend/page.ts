@@ -4,79 +4,30 @@ import { WryExecutionContextDelegate } from "./executionContext";
 import { WryRawKeyboard, WryRawMouse, WryRawTouchscreen } from "./input";
 import type { WryRuntime } from "./runtime";
 
-interface PageLike {
-  frameManager: {
-    frameAttached(frameId: string, parentFrameId: string | null): FrameLike;
-    frameCommittedNewDocumentNavigation(
-      frameId: string,
-      url: string,
-      name: string,
-      documentId: string,
-      initial: boolean,
-    ): void;
-    frameLifecycleEvent(frameId: string, event: string): void;
-    mainFrame(): FrameLike;
-  };
-  addConsoleMessage(worker: unknown, type: string, args: unknown[], location: ConsoleLocation, text: string): void;
-  addPageError(error: Error): void;
-  reportAsNew(opener: unknown, error?: unknown): Promise<void>;
-}
-
-interface ConsoleLocation {
-  url: string;
-  lineNumber: number;
-  columnNumber: number;
-}
-
-type WryRuntimeEvent =
-  | { kind: "console"; type: string; text: string }
-  | { kind: "pageerror"; name: string; message: string; stack: string }
-  | { kind: "lifecycle"; event: "load" | "domcontentloaded" }
-  | { kind: "dialog"; id: number; type: string; message: string; defaultValue: string };
-
-interface FrameLike {
-  _id: string;
-  _setContext(world: "main" | "utility", context: unknown): void;
-}
-
-type PageCtor = new (delegate: unknown, browserContext: unknown) => PageLike;
-type FrameExecutionContextCtor = new (
-  delegate: unknown,
-  frame: unknown,
-  world: string,
-) => unknown;
-
-const PageBaseCtor = Page as unknown as PageCtor;
-const FrameExecutionContextCtor = FrameExecutionContext as unknown as FrameExecutionContextCtor;
+/* eslint-disable @typescript-eslint/no-explicit-any */
 
 const WRY_MAIN_FRAME_ID = "wry-main";
 const WRY_INITIAL_DOCUMENT_ID = "wry-doc-1";
 
+type WryRuntimeEvent =
+  | { kind: "console"; type: string; text: string }
+  | { kind: "pageerror"; name: string; message: string; stack: string }
+  | { kind: "lifecycle"; event: "load" | "domcontentloaded" };
+
 /**
- * PageDelegate for a wry webview. Implements the ~40-method contract Playwright's
- * Page class expects from its `delegate` (modeled on
- * node_modules/playwright-core/lib/server/chromium/crPage.js).
- *
- * Most methods are noop or throw-not-supported stubs because the embedded
- * wry webview does not expose OS-level features (screenshots, PDF, video,
- * geolocation, cookies, HTTP credentials, etc.). The methods that do real
- * work are:
- *  - navigateFrame / reload
- *  - closePage
- *  - addInitScript / removeInitScripts
- *  - adoptElementHandle (identity since there's only one world)
- *  - getContentQuads / scrollRectIntoViewIfNeeded (via element evaluate)
- *  - inputActionEpilogue (noop; no CDP session to flush)
+ * PageDelegate for a wry webview. Implements the slice of Playwright's
+ * PageDelegate contract (see chromium/crPage.js) that Playwright actually
+ * calls in practice. Unsupported methods throw on invocation; we add them
+ * back only when a failing test demands it.
  */
 export class WryPageDelegate {
   readonly rawKeyboard: WryRawKeyboard;
   readonly rawMouse: WryRawMouse;
   readonly rawTouchscreen: WryRawTouchscreen;
-  readonly _page: PageLike;
+  readonly _page: any;
   readonly _browserContext: WryBrowserContext;
   readonly _runtime: WryRuntime;
   readonly _executionContextDelegate: WryExecutionContextDelegate;
-
   private eventPoller: ReturnType<typeof setInterval> | null = null;
   private eventPollInFlight = false;
   private stopped = false;
@@ -88,7 +39,21 @@ export class WryPageDelegate {
     this.rawKeyboard = new WryRawKeyboard(runtime);
     this.rawMouse = new WryRawMouse(runtime);
     this.rawTouchscreen = new WryRawTouchscreen(runtime);
-    this._page = new PageBaseCtor(this, browserContext);
+    this._page = new (Page as any)(this, browserContext);
+  }
+
+  async initialize(initialUrl = "wry://index.html"): Promise<void> {
+    const fm = this._page.frameManager;
+    fm.frameAttached(WRY_MAIN_FRAME_ID, null);
+    const frame = fm.mainFrame();
+    const context = new (FrameExecutionContext as any)(this._executionContextDelegate, frame, "main");
+    frame._setContext("main", context);
+    frame._setContext("utility", context);
+    fm.frameCommittedNewDocumentNavigation(WRY_MAIN_FRAME_ID, initialUrl, "", WRY_INITIAL_DOCUMENT_ID, true);
+    fm.frameLifecycleEvent(WRY_MAIN_FRAME_ID, "load");
+    fm.frameLifecycleEvent(WRY_MAIN_FRAME_ID, "domcontentloaded");
+    await this._page.reportAsNew(undefined);
+    this.startEventFerry();
   }
 
   startEventFerry(intervalMs = 50): void {
@@ -117,260 +82,114 @@ export class WryPageDelegate {
     } catch {
       return;
     }
-    if (!Array.isArray(events) || events.length === 0) return;
+    if (!Array.isArray(events)) return;
     for (const event of events) {
-      this.dispatchEvent(event);
+      if (event.kind === "console") {
+        this._page.addConsoleMessage(null, event.type, [], { url: "", lineNumber: 0, columnNumber: 0 }, event.text);
+      } else if (event.kind === "pageerror") {
+        const err = new Error(event.message);
+        err.name = event.name;
+        if (event.stack) err.stack = event.stack;
+        this._page.addPageError(err);
+      } else if (event.kind === "lifecycle") {
+        this._page.frameManager.frameLifecycleEvent(WRY_MAIN_FRAME_ID, event.event);
+      }
     }
   }
 
-  private dispatchEvent(event: WryRuntimeEvent): void {
-    if (event.kind === "console") {
-      this._page.addConsoleMessage(null, event.type, [], { url: "", lineNumber: 0, columnNumber: 0 }, event.text);
-      return;
-    }
-    if (event.kind === "pageerror") {
-      const err = new Error(event.message);
-      err.name = event.name;
-      if (event.stack) err.stack = event.stack;
-      this._page.addPageError(err);
-      return;
-    }
-    if (event.kind === "lifecycle") {
-      this._page.frameManager.frameLifecycleEvent(WRY_MAIN_FRAME_ID, event.event);
-      return;
-    }
-    // Dialog ferry is sketched but not wired up yet (Tier 3).
-  }
+  // -------- PageDelegate interface (minimal slice) --------
 
-  /**
-   * Call once after the runtime bridge is connected and __pwx is installed.
-   * Attaches the main frame and advertises the initial document load so
-   * Playwright's FrameManager treats the page as initialized.
-   */
-  async initialize(initialUrl = "wry://index.html"): Promise<void> {
-    this._page.frameManager.frameAttached(WRY_MAIN_FRAME_ID, null);
-    const frame = this._page.frameManager.mainFrame();
-    const mainContext = new FrameExecutionContextCtor(
-      this._executionContextDelegate,
-      frame,
-      "main",
-    );
-    frame._setContext("main", mainContext);
-    // wry has no utility world; reuse the main context. Playwright still calls
-    // _utilityContext() in some paths (InjectedScript), and getting the same
-    // context back is harmless.
-    frame._setContext("utility", mainContext);
-    this._page.frameManager.frameCommittedNewDocumentNavigation(
-      WRY_MAIN_FRAME_ID,
-      initialUrl,
-      "",
-      WRY_INITIAL_DOCUMENT_ID,
-      true,
-    );
-    this._page.frameManager.frameLifecycleEvent(WRY_MAIN_FRAME_ID, "load");
-    this._page.frameManager.frameLifecycleEvent(WRY_MAIN_FRAME_ID, "domcontentloaded");
-    await this._page.reportAsNew(undefined);
-    this.startEventFerry();
-  }
-
-  // -------- PageDelegate interface (mirrors crPage.js shape) --------
-
-  async navigateFrame(_frame: unknown, url: string, _referrer: unknown): Promise<unknown> {
+  async navigateFrame(_frame: any, url: string): Promise<any> {
     await this._runtime.call("rawEvaluateJSON", `(window.location.assign(${JSON.stringify(url)}), null)`);
     return { newDocumentId: `wry-doc-${Date.now()}` };
-  }
-
-  async updateExtraHTTPHeaders(): Promise<void> {
-    /* not supported on wry */
-  }
-
-  async updateGeolocation(): Promise<void> {
-    /* not supported on wry */
-  }
-
-  async updateOffline(): Promise<void> {
-    /* not supported on wry */
-  }
-
-  async updateHttpCredentials(): Promise<void> {
-    /* not supported on wry */
-  }
-
-  async updateEmulatedViewportSize(): Promise<void> {
-    /* not supported: viewport is owned by the wry window */
-  }
-
-  async bringToFront(): Promise<void> {
-    /* not supported */
-  }
-
-  async updateEmulateMedia(): Promise<void> {
-    /* not supported */
-  }
-
-  async updateUserAgent(): Promise<void> {
-    /* not supported */
-  }
-
-  async updateRequestInterception(): Promise<void> {
-    /* deferred to Tier 2 */
-  }
-
-  async updateFileChooserInterception(): Promise<void> {
-    /* deferred to Tier 3 */
   }
 
   async reload(): Promise<void> {
     await this._runtime.call("rawEvaluateJSON", "(window.location.reload(), null)");
   }
 
-  goBack(): Promise<boolean> {
-    return Promise.resolve(false);
+  async closePage(): Promise<void> {
+    await (this._browserContext._browser as any)._closePage?.(this);
   }
 
-  goForward(): Promise<boolean> {
-    return Promise.resolve(false);
-  }
-
-  async requestGC(): Promise<void> {
-    /* not exposed by wry */
-  }
-
-  async addInitScript(_initScript: unknown, _world: "main" | "utility" = "main"): Promise<void> {
-    // Init scripts would need to be injected before app JS runs; wry currently
-    // does not support this cleanly. Deferred.
-  }
-
-  async exposePlaywrightBinding(): Promise<void> {
-    /* deferred */
-  }
-
-  async removeInitScripts(): Promise<void> {
-    /* deferred (paired with addInitScript) */
-  }
-
-  async closePage(_runBeforeUnload: boolean): Promise<void> {
-    await this._browserContext._browser._closePage?.(this);
-  }
-
-  async setBackgroundColor(): Promise<void> {
-    /* not supported */
-  }
-
-  async takeScreenshot(): Promise<never> {
-    throw new Error("Screenshots are not supported on the wry backend yet");
-  }
-
-  async getContentFrame(_handle: unknown): Promise<null> {
+  async getContentFrame(): Promise<null> {
     return null;
   }
 
-  async getOwnerFrame(handle: OwnerFrameHandle): Promise<string | null> {
-    return handle._context?.frame?._id ?? WRY_MAIN_FRAME_ID;
+  async getOwnerFrame(handle: any): Promise<string> {
+    return handle?._context?.frame?._id ?? WRY_MAIN_FRAME_ID;
   }
 
-  async getBoundingBox(handle: EvaluableHandle): Promise<BoundingBox | null> {
+  async getBoundingBox(handle: any): Promise<any> {
     return handle.evaluate((el: Element) => {
-      const rect = el.getBoundingClientRect();
-      return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+      const r = el.getBoundingClientRect();
+      return { x: r.x, y: r.y, width: r.width, height: r.height };
     });
   }
 
-  async scrollRectIntoViewIfNeeded(
-    handle: EvaluableHandle,
-    _rect: unknown,
-  ): Promise<"error:notconnected" | "error:notvisible" | "done"> {
+  async scrollRectIntoViewIfNeeded(handle: any): Promise<string> {
     try {
       await handle.evaluate((el: Element) => {
         if (!el.isConnected) throw new Error("error:notconnected");
-        const anyEl = el as Element & { scrollIntoViewIfNeeded?: (center: boolean) => void };
-        if (typeof anyEl.scrollIntoViewIfNeeded === "function") {
-          anyEl.scrollIntoViewIfNeeded(false);
-          return;
-        }
-        el.scrollIntoView({ block: "center", inline: "center" });
+        const any = el as any;
+        if (typeof any.scrollIntoViewIfNeeded === "function") any.scrollIntoViewIfNeeded(false);
+        else el.scrollIntoView({ block: "center", inline: "center" });
       });
       return "done";
     } catch (error) {
-      const message = (error as Error).message;
-      if (message.includes("error:notconnected")) return "error:notconnected";
+      if ((error as Error).message.includes("error:notconnected")) return "error:notconnected";
       throw error;
     }
   }
 
-  async startScreencast(): Promise<never> {
-    throw new Error("Screencast is not supported on the wry backend");
+  async getContentQuads(handle: any): Promise<any> {
+    return handle.evaluate((el: Element) =>
+      Array.from(el.getClientRects()).map((r) => [
+        { x: r.left, y: r.top },
+        { x: r.right, y: r.top },
+        { x: r.right, y: r.bottom },
+        { x: r.left, y: r.bottom },
+      ]),
+    );
   }
 
-  async stopScreencast(): Promise<void> {
-    /* noop */
+  async adoptElementHandle<T>(handle: T): Promise<T> {
+    return handle;
   }
 
   rafCountForStablePosition(): number {
     return 1;
   }
 
-  async getContentQuads(handle: EvaluableHandle): Promise<Quad[] | null> {
-    return handle.evaluate((el: Element) => {
-      const rects = el.getClientRects();
-      const quads: Array<Array<{ x: number; y: number }>> = [];
-      for (const rect of Array.from(rects)) {
-        quads.push([
-          { x: rect.left, y: rect.top },
-          { x: rect.right, y: rect.top },
-          { x: rect.right, y: rect.bottom },
-          { x: rect.left, y: rect.bottom },
-        ]);
-      }
-      return quads;
-    });
-  }
-
-  async setInputFilePaths(): Promise<never> {
-    throw new Error("File uploads are not supported on the wry backend yet");
-  }
-
-  async adoptElementHandle<T>(handle: T, _to: unknown): Promise<T> {
-    // All handles live in the single shared execution context.
-    return handle;
-  }
-
-  async inputActionEpilogue(): Promise<void> {
-    /* no CDP session to flush */
-  }
-
-  async resetForReuse(): Promise<void> {
-    /* session reuse not supported */
+  shouldToggleStyleSheetToSyncAnimations(): boolean {
+    return false;
   }
 
   coverage(): null {
     return null;
   }
 
-  shouldToggleStyleSheetToSyncAnimations(): boolean {
-    return false;
-  }
-
-  async getFrameElement(_frame: unknown): Promise<never> {
-    throw new Error("Only the main frame is exposed on the wry backend");
-  }
+  // Methods below are noops that Playwright calls unconditionally during
+  // lifecycle/context setup. Leaving them as async-noops is cheaper than
+  // letting the call crash.
+  async updateExtraHTTPHeaders() {}
+  async updateEmulatedViewportSize() {}
+  async updateEmulateMedia() {}
+  async updateRequestInterception() {}
+  async updateFileChooserInterception() {}
+  async updateOffline() {}
+  async updateHttpCredentials() {}
+  async updateGeolocation() {}
+  async updateUserAgent() {}
+  async bringToFront() {}
+  async addInitScript() {}
+  async removeInitScripts() {}
+  async exposePlaywrightBinding() {}
+  async resetForReuse() {}
+  async inputActionEpilogue() {}
+  async requestGC() {}
+  async setBackgroundColor() {}
+  async stopScreencast() {}
+  goBack() { return Promise.resolve(false); }
+  goForward() { return Promise.resolve(false); }
 }
-
-// --- Helper types for PageDelegate method contracts ---
-
-interface EvaluableHandle {
-  evaluate<R>(fn: (...args: unknown[]) => R, arg?: unknown): Promise<R>;
-}
-
-interface OwnerFrameHandle {
-  _context?: { frame?: { _id?: string } };
-}
-
-interface BoundingBox {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
-type Quad = Array<{ x: number; y: number }>;

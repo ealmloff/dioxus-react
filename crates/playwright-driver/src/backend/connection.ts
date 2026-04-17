@@ -4,8 +4,6 @@ import {
   Playwright,
   PlaywrightDispatcher,
   RootDispatcher,
-  type DispatcherConnectionLike,
-  type DispatcherLike,
   wsServer,
 } from "../internals";
 import { AppProcess } from "./appProcess";
@@ -13,55 +11,20 @@ import { WryBrowser, WryBrowserContext } from "./browser";
 import { WryPageDelegate } from "./page";
 import { WryRuntime } from "./runtime";
 
-interface PlaywrightCtor {
-  new (options: { sdkLanguage: string; isServer?: boolean }): PlaywrightInstance;
-}
+/* eslint-disable @typescript-eslint/no-explicit-any */
 
-interface PlaywrightInstance {
-  webkit: unknown;
-  attribution: { playwright?: unknown };
-}
-
-interface PlaywrightDispatcherCtor {
-  new (
-    scope: DispatcherLike,
-    playwright: PlaywrightInstance,
-    options?: Record<string, unknown>,
-  ): DispatcherLike;
-}
-
-const PlaywrightCtor = Playwright as unknown as PlaywrightCtor;
-const PlaywrightDispatcherCtor = PlaywrightDispatcher as unknown as PlaywrightDispatcherCtor;
-
-interface WebSocketLike {
-  send(data: string): void;
-  on(event: "message", listener: (data: unknown) => void): this;
-  on(event: "close", listener: () => void): this;
-  close(): void;
-  terminate?: () => void;
-}
-
-interface WsServerLike {
-  on(event: "connection", listener: (socket: WebSocketLike) => void): this;
-  once(event: "listening", listener: () => void): this;
-  address(): { port: number } | string | null;
-  close(callback: () => void): void;
-}
-
-const WsServerCtor = wsServer as unknown as new (opts: { port: number }) => WsServerLike;
-
-interface WrySessionBundle {
+interface Session {
   app: AppProcess;
-  playwright: PlaywrightInstance;
+  playwright: any;
   browser: WryBrowser;
   delegate: WryPageDelegate;
 }
 
-async function createSession(appPort: number): Promise<WrySessionBundle> {
+async function createSession(appPort: number): Promise<Session> {
   const app = new AppProcess(appPort);
   await app.start();
   const runtime = new WryRuntime(app.bridge);
-  const playwright = new PlaywrightCtor({ sdkLanguage: "javascript" });
+  const playwright = new (Playwright as any)({ sdkLanguage: "javascript" });
   const browser = new WryBrowser(playwright);
   const context = new WryBrowserContext(browser);
   browser._registerContext(context);
@@ -71,105 +34,73 @@ async function createSession(appPort: number): Promise<WrySessionBundle> {
   return { app, playwright, browser, delegate };
 }
 
-export interface PlaywrightWryProxyOptions {
-  proxyPort?: number;
-}
-
 /**
- * WebSocket server that speaks Playwright's dispatcher protocol and binds each
- * connection to a prelaunched WryBrowser. Drop-in replacement for the old
- * proxy.ts + controller.ts + dispatchers/browser.ts pipeline — now there's no
- * custom per-method dispatch layer, just Playwright's own dispatchers backed
- * by our 5-method execution-context delegate.
+ * WebSocket server speaking Playwright's dispatcher protocol. Each incoming
+ * connection gets its own prelaunched WryBrowser; Playwright's real
+ * BrowserDispatcher/PageDispatcher/FrameDispatcher/etc. wrap our subclasses
+ * and handle every wire message.
  */
 export class PlaywrightWryProxy {
-  private readonly proxyPort: number;
-  private server: WsServerLike | null = null;
-  private readonly sockets = new Set<WebSocketLike>();
-  private readonly sessions = new Set<WrySessionBundle>();
+  private server: any = null;
+  private readonly sockets = new Set<any>();
+  private readonly sessions = new Set<Session>();
 
-  constructor({ proxyPort = 0 }: PlaywrightWryProxyOptions = {}) {
-    this.proxyPort = proxyPort;
-  }
+  constructor(private options: { proxyPort?: number } = {}) {}
 
   async start(): Promise<string> {
-    this.server = new WsServerCtor({ port: this.proxyPort });
-    this.server.on("connection", (socket: WebSocketLike) => {
+    this.server = new (wsServer as any)({ port: this.options.proxyPort ?? 0 });
+    this.server.on("connection", (socket: any) => {
       this.sockets.add(socket);
-
-      const connection = new DispatcherConnection() as DispatcherConnectionLike & {
-        onmessage?: (message?: unknown) => void;
-      };
+      const connection: any = new (DispatcherConnection as any)();
       const sessionPromise = createSession(randomPort());
 
-      const root = new RootDispatcher(connection, async (scope: DispatcherLike) => {
-        const session = await sessionPromise;
-        return new PlaywrightDispatcherCtor(scope, session.playwright, {
-          preLaunchedBrowser: session.browser,
+      const root = new (RootDispatcher as any)(connection, async (scope: any) => {
+        const s = await sessionPromise;
+        return new (PlaywrightDispatcher as any)(scope, s.playwright, {
+          preLaunchedBrowser: s.browser,
           denyLaunch: true,
           sharedBrowser: true,
         });
       });
 
-      connection.onmessage = (message?: unknown) => socket.send(JSON.stringify(message));
-
+      connection.onmessage = (m: unknown) => socket.send(JSON.stringify(m));
       socket.on("message", async (data: unknown) => {
-        try {
-          const message = JSON.parse(String(data));
-          await connection.dispatch(message);
-        } catch (error) {
-          if (process.env.DEBUG) console.error("proxy: dispatch failure", error);
-        }
+        try { await connection.dispatch(JSON.parse(String(data))); }
+        catch (error) { if (process.env.DEBUG) console.error("proxy: dispatch failure", error); }
       });
-
       socket.on("close", () => {
         this.sockets.delete(socket);
         root._dispose();
-        void sessionPromise.then((session) => {
-          this.sessions.delete(session);
-          session.delegate.stopEventFerry();
-          return session.app.close();
+        void sessionPromise.then((s) => {
+          this.sessions.delete(s);
+          s.delegate.stopEventFerry();
+          return s.app.close();
         }).catch(() => {});
       });
 
-      void sessionPromise.then((session) => this.sessions.add(session)).catch(() => {});
+      void sessionPromise.then((s) => this.sessions.add(s)).catch(() => {});
     });
 
-    await new Promise<void>((resolve) => this.server?.once("listening", () => resolve()));
+    await new Promise<void>((resolve) => this.server.once("listening", resolve));
     return this.wsEndpoint();
   }
 
   wsEndpoint(): string {
-    const address = this.server?.address();
-    if (!address || typeof address === "string") {
-      throw new Error("Proxy websocket server is not listening");
-    }
-    return `ws://127.0.0.1:${address.port}`;
+    const a = this.server?.address();
+    if (!a || typeof a === "string") throw new Error("Proxy websocket server is not listening");
+    return `ws://127.0.0.1:${a.port}`;
   }
 
   async close(): Promise<void> {
-    for (const socket of this.sockets) {
-      try {
-        socket.close();
-      } catch {
-        /* ignore */
-      }
-      try {
-        socket.terminate?.();
-      } catch {
-        /* ignore */
-      }
-    }
+    for (const s of this.sockets) { try { s.close(); } catch {} try { s.terminate?.(); } catch {} }
     this.sockets.clear();
-
     if (this.server) {
-      await new Promise<void>((resolve) => this.server?.close(() => resolve()));
+      await new Promise<void>((resolve) => this.server.close(() => resolve()));
       this.server = null;
     }
-
     const sessions = [...this.sessions];
     this.sessions.clear();
-    for (const session of sessions) session.delegate.stopEventFerry();
-    await Promise.all(sessions.map((session) => session.app.close()));
+    for (const s of sessions) s.delegate.stopEventFerry();
+    await Promise.all(sessions.map((s) => s.app.close()));
   }
 }

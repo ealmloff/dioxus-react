@@ -3,175 +3,104 @@ import {
   FrameExecutionContext,
   JSHandle,
   JavaScriptErrorInEvaluate,
-  type JSHandleLike,
   parseEvaluationResultValue,
   parseUnserializableValue,
-  sparseArrayToString,
 } from "../internals";
 import { RuntimeEvalError, WryRuntime } from "./runtime";
 
-/**
- * Shape returned by __pwx runtime calls that produce a handle. Mirrors CDP's
- * Runtime.RemoteObject so that Playwright-core's createHandle logic fits without
- * reinterpretation.
- */
-interface RemoteObject {
-  type: string;
-  subtype?: string;
-  objectId?: string;
-  preview?: string;
-  description?: string;
-  value?: unknown;
-  unserializableValue?: string;
-}
-
-interface PropertyEntry {
-  name: string;
-  handle: RemoteObject;
-}
-
-interface CallFunctionArg {
-  value?: unknown;
-  objectId?: string;
-}
+/* eslint-disable @typescript-eslint/no-explicit-any */
 
 /**
- * Playwright ExecutionContext delegate backed by the wry webview bridge.
- *
- * Implements the 5-method contract documented in
- * node_modules/playwright-core/lib/server/javascript.js:47 and modeled on
- * node_modules/playwright-core/lib/server/chromium/crExecutionContext.js.
- *
- * Once plugged into a Playwright ExecutionContext, every higher-level API
- * (evaluate, evaluateHandle, getProperties, $, $$, waitForSelector, locator
- * actions, expect matchers, selector engines, actionability) works for free.
+ * Playwright ExecutionContext delegate backed by the wry eval bridge.
+ * Mirrors node_modules/playwright-core/lib/server/chromium/crExecutionContext.js.
+ * Once this is plugged in, every Playwright evaluate/query/locator/action
+ * path runs for free.
  */
 export class WryExecutionContextDelegate {
   constructor(private readonly runtime: WryRuntime) {}
 
   async rawEvaluateJSON(expression: string): Promise<unknown> {
-    try {
-      const remote = await this.runtime.call<RemoteObject>("rawEvaluateJSON", expression);
-      return potentiallyUnserializableValue(remote);
-    } catch (error) {
-      throw rewriteError(error);
-    }
+    return unwrap(await this.call("rawEvaluateJSON", expression));
   }
 
-  async rawEvaluateHandle(context: unknown, expression: string): Promise<JSHandleLike> {
-    try {
-      const remote = await this.runtime.call<RemoteObject>("rawEvaluateHandle", expression);
-      return createHandle(context, remote);
-    } catch (error) {
-      throw rewriteError(error);
-    }
+  async rawEvaluateHandle(context: unknown, expression: string): Promise<any> {
+    return toHandle(context, await this.call("rawEvaluateHandle", expression));
   }
 
   async evaluateWithArguments(
     expression: string,
     returnByValue: boolean,
-    utilityScript: JSHandleLike,
+    utilityScript: any,
     values: unknown[],
-    handles: JSHandleLike[],
+    handles: any[],
   ): Promise<unknown> {
-    const utilityObjectId = utilityScript._objectId;
-    if (!utilityObjectId) {
-      throw new JavaScriptErrorInEvaluate("UtilityScript handle is missing an objectId");
-    }
-    const args: CallFunctionArg[] = [
-      { objectId: utilityObjectId },
-      ...values.map((value) => ({ value })),
-      ...handles.map((handle) => {
-        if (!handle._objectId) {
-          throw new JavaScriptErrorInEvaluate("Handle argument is missing an objectId");
-        }
-        return { objectId: handle._objectId };
-      }),
-    ];
-
-    try {
-      const remote = await this.runtime.call<RemoteObject>("callFunctionOn", {
-        functionDeclaration: expression,
-        objectId: utilityObjectId,
-        arguments: args,
-        returnByValue,
-        awaitPromise: true,
-      });
-
-      if (returnByValue) {
-        return parseEvaluationResultValue(remote.value);
-      }
-      return createHandle(utilityScript._context, remote);
-    } catch (error) {
-      throw rewriteError(error);
-    }
+    const objectId = utilityScript._objectId;
+    if (!objectId) throw new JavaScriptErrorInEvaluate("UtilityScript handle is missing an objectId");
+    const remote = await this.call("callFunctionOn", {
+      functionDeclaration: expression,
+      objectId,
+      arguments: [
+        { objectId },
+        ...values.map((value) => ({ value })),
+        ...handles.map((h) => ({ objectId: h._objectId })),
+      ],
+      returnByValue,
+      awaitPromise: true,
+    });
+    return returnByValue ? parseEvaluationResultValue(remote.value) : toHandle(utilityScript._context, remote);
   }
 
-  async getProperties(object: JSHandleLike): Promise<Map<string, JSHandleLike>> {
+  async getProperties(object: any): Promise<Map<string, any>> {
     if (!object._objectId) return new Map();
-    const properties = await this.runtime.call<PropertyEntry[]>("getProperties", object._objectId);
-    const result = new Map<string, JSHandleLike>();
-    for (const entry of properties) {
-      result.set(entry.name, createHandle(object._context, entry.handle));
-    }
+    const properties = await this.call<Array<{ name: string; handle: any }>>("getProperties", object._objectId);
+    const result = new Map<string, any>();
+    for (const { name, handle } of properties) result.set(name, toHandle(object._context, handle));
     return result;
   }
 
-  async releaseHandle(handle: JSHandleLike): Promise<void> {
+  async releaseHandle(handle: any): Promise<void> {
     if (!handle._objectId) return;
-    await this.runtime.call("releaseHandle", handle._objectId).catch(() => {
-      // Matches crExecutionContext: release best-effort.
-    });
+    await this.call("releaseHandle", handle._objectId).catch(() => {});
+  }
+
+  private async call<T = any>(method: string, ...args: unknown[]): Promise<T> {
+    try {
+      return await this.runtime.call<T>(method, ...args);
+    } catch (error) {
+      if (error instanceof RuntimeEvalError) {
+        const err = new JavaScriptErrorInEvaluate(error.message);
+        if (error.stack) err.stack = error.stack;
+        throw err;
+      }
+      throw error;
+    }
   }
 }
 
-function createHandle(context: unknown, remote: RemoteObject): JSHandleLike {
+function toHandle(context: unknown, remote: any): any {
   if (remote.subtype === "node") {
-    if (!(context instanceof (FrameExecutionContext as unknown as { new (...args: unknown[]): unknown }))) {
-      throw new JavaScriptErrorInEvaluate(
-        "Node handles require a FrameExecutionContext",
-      );
+    if (!(context instanceof (FrameExecutionContext as any))) {
+      throw new JavaScriptErrorInEvaluate("Node handles require a FrameExecutionContext");
     }
-    if (!remote.objectId) {
-      throw new JavaScriptErrorInEvaluate("Node handle is missing an objectId");
-    }
-    return new ElementHandle(context, remote.objectId);
+    return new (ElementHandle as any)(context, remote.objectId);
   }
-
-  return new JSHandle(
+  return new (JSHandle as any)(
     context,
     remote.subtype || remote.type,
     renderPreview(remote),
     remote.objectId,
-    potentiallyUnserializableValue(remote),
+    unwrap(remote),
   );
 }
 
-function potentiallyUnserializableValue(remote: RemoteObject): unknown {
-  if (remote.unserializableValue !== undefined) {
-    return parseUnserializableValue(remote.unserializableValue);
-  }
+function unwrap(remote: any): unknown {
+  if (remote.unserializableValue !== undefined) return parseUnserializableValue(remote.unserializableValue);
   return remote.value;
 }
 
-function renderPreview(remote: RemoteObject): string {
+function renderPreview(remote: any): string {
   if (remote.type === "undefined") return "undefined";
-  if ("value" in remote && remote.value !== undefined) return String(remote.value);
+  if (remote.value !== undefined) return String(remote.value);
   if (remote.unserializableValue) return String(remote.unserializableValue);
-  if (remote.preview) return remote.preview;
-  if (remote.description) return remote.description;
-  if (remote.subtype === "array") {
-    return sparseArrayToString([]);
-  }
-  return remote.type;
-}
-
-function rewriteError(error: unknown): Error {
-  if (error instanceof RuntimeEvalError) {
-    const wrapped = new JavaScriptErrorInEvaluate(error.message);
-    if (error.stack) wrapped.stack = error.stack;
-    return wrapped;
-  }
-  if (error instanceof Error) return error;
-  return new JavaScriptErrorInEvaluate(String(error));
+  return remote.preview || remote.description || remote.type;
 }
